@@ -84,13 +84,12 @@ ok "System updated."
 # ══════════════════════════════════════════════════════════════════════
 msg "Installing XFCE desktop environment + TigerVNC..."
 
-# NOTE: We deliberately avoid xfce4-goodies because it pulls in
-# elementary-xfce-icon-theme, which is enormous (10k+ icons) and
-# hangs for a very long time (or indefinitely) during dpkg unpack
-# inside proot.  Instead we install the useful goodies plugins
-# individually below.
+# NOTE: We use --no-install-recommends to prevent apt from pulling in
+# elementary-xfce-icon-theme (10k+ icon files that hang dpkg in proot).
+# We explicitly install adwaita-icon-theme-full as the icon set instead.
 
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    --no-install-recommends \
     -o Dpkg::Options::="--force-confdef" \
     -o Dpkg::Options::="--force-confold" \
     xfce4 xfce4-terminal \
