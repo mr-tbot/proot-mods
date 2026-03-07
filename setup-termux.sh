@@ -249,7 +249,6 @@ cat > "$HOME/start-ubuntu-vnc.sh" <<'LAUNCHER'
 #
 #  Then connect with VNC viewer to localhost:5901
 # ─────────────────────────────────────────────────────────────
-set -euo pipefail
 
 CONF="$HOME/.proot-resolutions.conf"
 
@@ -322,34 +321,74 @@ echo "  Port:       ${VNC_PORT}"
 echo "  Resolution: ${RESOLUTION}"
 echo ""
 
+# ── Battery optimization warning ──
+echo "  ⚠  If Termux keeps getting killed (error 9), disable"
+echo "     battery optimization for Termux in Android Settings:"
+echo "     Settings → Apps → Termux → Battery → Unrestricted"
+echo ""
+
 # Acquire wake-lock so Android doesn't kill the session
 command -v termux-wake-lock &>/dev/null && termux-wake-lock
 
-# Kill any existing VNC server on this display
+# Build proot args early (needed for cleanup + launch)
+PROOT_ARGS=""
+if [[ -d /dev/bus/usb ]]; then
+    PROOT_ARGS="--bind /dev/bus/usb:/dev/bus/usb"
+fi
+
+# ── Thorough VNC cleanup (Andronix fix for "cannot connect" on relaunch) ──
+echo "  Cleaning up previous VNC session..."
+
+# Kill VNC inside proot from any previous session
+proot-distro login ubuntu --shared-tmp ${PROOT_ARGS} -- bash -c "
+    vncserver -kill :${DISPLAY_NUM} 2>/dev/null || true
+    pkill -9 -f Xvnc 2>/dev/null || true
+    pkill -9 -f Xtigervnc 2>/dev/null || true
+    rm -rf /tmp/.X*-lock 2>/dev/null || true
+    rm -rf /tmp/.X11-unix/X* 2>/dev/null || true
+    rm -f \$HOME/.vnc/*.pid 2>/dev/null || true
+    rm -f \$HOME/.vnc/*.log 2>/dev/null || true
+" 2>/dev/null || true
+
+# Also clean Termux-side VNC
 vncserver -kill ":${DISPLAY_NUM}" 2>/dev/null || true
+pkill -f Xvnc 2>/dev/null || true
+rm -f /tmp/.X*-lock /tmp/.X11-unix/X* 2>/dev/null || true
 
 # Start PulseAudio (for sound forwarding)
 pulseaudio --start \
     --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
     --exit-idle-time=-1 2>/dev/null || true
 
-# Launch proot-distro with Ubuntu and start VNC inside it
-# Build proot args: share /tmp and bind USB if available
-PROOT_ARGS=""
-if [[ -d /dev/bus/usb ]]; then
-    PROOT_ARGS="--bind /dev/bus/usb:/dev/bus/usb"
-fi
+# Clean exit handler
+cleanup() {
+    echo ""
+    echo "  Stopping VNC session..."
+    proot-distro login ubuntu --shared-tmp -- bash -c "
+        vncserver -kill :${DISPLAY_NUM} 2>/dev/null || true
+        pkill -f Xvnc 2>/dev/null || true
+        rm -rf /tmp/.X*-lock /tmp/.X11-unix/X* 2>/dev/null || true
+        rm -f \$HOME/.vnc/*.pid 2>/dev/null || true
+    " 2>/dev/null || true
+    pulseaudio --kill 2>/dev/null || true
+    command -v termux-wake-unlock &>/dev/null && termux-wake-unlock
+    echo "  ✔ Cleaned up."
+}
+trap cleanup EXIT INT TERM
 
+# Launch proot-distro with Ubuntu and start VNC inside it
 proot-distro login ubuntu --shared-tmp $PROOT_ARGS -- bash -c "
     export DISPLAY=:${DISPLAY_NUM}
     export PULSE_SERVER=127.0.0.1
 
     # Start dbus if available
+    mkdir -p /tmp/dbus-session 2>/dev/null || true
     export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/dbus-session-bus
     dbus-daemon --session --address=\$DBUS_SESSION_BUS_ADDRESS --nofork --nopidfile 2>/dev/null &
 
-    # Clean stale locks
-    rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM} 2>/dev/null
+    # Final lock cleanup (belt and suspenders)
+    rm -f /tmp/.X${DISPLAY_NUM}-lock /tmp/.X11-unix/X${DISPLAY_NUM} 2>/dev/null || true
+    rm -f \$HOME/.vnc/*:${DISPLAY_NUM}.pid 2>/dev/null || true
 
     # Start TigerVNC (try no-auth first for local use, fallback to standard)
     vncserver :${DISPLAY_NUM} \
@@ -358,12 +397,12 @@ proot-distro login ubuntu --shared-tmp $PROOT_ARGS -- bash -c "
         -name 'Ubuntu Desktop' \
         -localhost no \
         -SecurityTypes None \
-        --I-KNOW-THIS-IS-INSECURE 2>/dev/null || \
+        --I-KNOW-THIS-IS-INSECURE 2>&1 || \
     vncserver :${DISPLAY_NUM} \
         -geometry ${RESOLUTION} \
         -depth 24 \
         -name 'Ubuntu Desktop' \
-        -localhost no 2>/dev/null
+        -localhost no 2>&1
 
     echo ''
     echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
@@ -401,7 +440,6 @@ cat > "$HOME/start-ubuntu-x11.sh" <<'LAUNCHER'
 #  Usage: bash ~/start-ubuntu-x11.sh
 #   Then open the Termux:X11 app on Android
 # ─────────────────────────────────────────────────────────────
-set -euo pipefail
 
 echo ""
 echo "  Starting Ubuntu Desktop (Termux:X11)..."
@@ -461,8 +499,30 @@ cat > "$HOME/stop-ubuntu.sh" <<'STOPPER'
 # ─────────────────────────────────────────────────────────────
 echo "  Stopping Ubuntu desktop..."
 
-# Stop VNC
-vncserver -kill :1 2>/dev/null && echo "  ✔ VNC server stopped." || true
+# Build proot args
+PROOT_ARGS=""
+if [[ -d /dev/bus/usb ]]; then
+    PROOT_ARGS="--bind /dev/bus/usb:/dev/bus/usb"
+fi
+
+# Stop VNC inside proot (thorough cleanup)
+proot-distro login ubuntu --shared-tmp ${PROOT_ARGS} -- bash -c "
+    vncserver -kill :1 2>/dev/null || true
+    vncserver -kill :2 2>/dev/null || true
+    pkill -9 -f Xvnc 2>/dev/null || true
+    pkill -9 -f Xtigervnc 2>/dev/null || true
+    pkill -f startxfce4 2>/dev/null || true
+    pkill -f xfce4-session 2>/dev/null || true
+    rm -rf /tmp/.X*-lock 2>/dev/null || true
+    rm -rf /tmp/.X11-unix/X* 2>/dev/null || true
+    rm -f \$HOME/.vnc/*.pid 2>/dev/null || true
+" 2>/dev/null || true
+
+# Stop Termux-side VNC
+vncserver -kill :1 2>/dev/null || true
+vncserver -kill :2 2>/dev/null || true
+pkill -f Xvnc 2>/dev/null || true
+echo "  ✔ VNC server stopped."
 
 # Stop Termux:X11
 pkill -f "termux.x11" 2>/dev/null && echo "  ✔ Termux:X11 stopped." || true
@@ -470,14 +530,19 @@ pkill -f "termux.x11" 2>/dev/null && echo "  ✔ Termux:X11 stopped." || true
 # Stop PulseAudio
 pulseaudio --kill 2>/dev/null && echo "  ✔ PulseAudio stopped." || true
 
+# Clean stale lock files
+rm -f /tmp/.X*-lock /tmp/.X11-unix/X* 2>/dev/null || true
+
 # Release wake-lock
 command -v termux-wake-unlock &>/dev/null && termux-wake-unlock && echo "  ✔ Wake-lock released."
 
 echo ""
 echo "  ✔ Ubuntu desktop environment stopped."
+echo "  Tip: If VNC won't connect next time, run this script first."
 STOPPER
 chmod +x "$HOME/stop-ubuntu.sh"
-ok "Stop script created: ~/stop-ubuntu.sh"
+sed -i "s|proot-distro login ubuntu|proot-distro login $UBUNTU_ALIAS|g" "$HOME/stop-ubuntu.sh"
+ok "Stop script created: ~/stop-ubuntu.sh (distro: $UBUNTU_ALIAS)"
 
 # ══════════════════════════════════════════════════════════════════════
 #  9. Create shell-only login script

@@ -90,6 +90,13 @@ apt-get upgrade -y
 ok "System updated."
 
 
+# ── Create /dev/shm (needed by Chromium/Electron apps in proot) ──────
+msg "Creating /dev/shm..."
+mkdir -p /dev/shm 2>/dev/null || true
+chmod 1777 /dev/shm 2>/dev/null || true
+ok "/dev/shm directory ensured."
+
+
 # ══════════════════════════════════════════════════════════════════════
 #  SECTION 1: Install XFCE Desktop Environment + VNC
 # ══════════════════════════════════════════════════════════════════════
@@ -333,14 +340,21 @@ if [[ -n "$CHROMIUM_BIN" ]]; then
         cat > "$CHROMIUM_BIN" <<WRAPPER
 #!/bin/sh
 # proot Chromium wrapper — all flags needed for proot environment
+export TMPDIR=/tmp
+export XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-/tmp/runtime-\$(whoami)}
+mkdir -p \$XDG_RUNTIME_DIR 2>/dev/null
 exec "$CHROMIUM_REAL" \\
   --no-sandbox \\
   --disable-dev-shm-usage \\
   --disable-gpu \\
   --disable-software-rasterizer \\
   --no-zygote \\
+  --disable-setuid-sandbox \\
   --password-store=basic \\
   --use-mock-keychain \\
+  --no-first-run \\
+  --no-default-browser-check \\
+  --disable-breakpad \\
   --disable-features=WebAuthentication,WebAuthn,SecurePaymentConfirmation \\
   "\$@"
 WRAPPER
@@ -417,6 +431,171 @@ text/html=${CHROMIUM_DESKTOP_NAME:-chromium.desktop}
 MIMEAPPS
     ok "Chromium set as default browser (xdg + alternatives + mimeapps)."
 fi
+
+# ── Guarantee Chromium .desktop file exists (needed for start menu) ──
+if [[ ! -f /usr/share/applications/chromium.desktop ]] && [[ ! -f /usr/share/applications/chromium-browser.desktop ]]; then
+    msg "Creating Chromium .desktop file for start menu..."
+    _chromium_exec=""
+    [[ -e /usr/bin/chromium ]]         && _chromium_exec="/usr/bin/chromium"
+    [[ -e /usr/bin/chromium-browser ]] && _chromium_exec="/usr/bin/chromium-browser"
+    [[ -z "$_chromium_exec" ]] && _chromium_exec="/usr/bin/chromium"
+
+    cat > /usr/share/applications/chromium.desktop <<CHROMDESK
+[Desktop Entry]
+Type=Application
+Name=Chromium Web Browser
+Comment=Access the Internet
+GenericName=Web Browser
+Exec=$_chromium_exec --no-sandbox --disable-dev-shm-usage %U
+Icon=chromium
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=$_chromium_exec --no-sandbox --disable-dev-shm-usage
+
+[Desktop Action new-private-window]
+Name=New Incognito Window
+Exec=$_chromium_exec --no-sandbox --disable-dev-shm-usage --incognito
+CHROMDESK
+    ok "Created /usr/share/applications/chromium.desktop"
+fi
+
+# Update desktop database so start menu picks up all .desktop files
+update-desktop-database /usr/share/applications 2>/dev/null || true
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  SECTION 3b: Install Google Chrome
+# ══════════════════════════════════════════════════════════════════════
+msg "Installing Google Chrome..."
+
+# Google Chrome for Linux — available for amd64 (and sometimes arm64).
+# On unsupported architectures it gracefully skips.
+
+CHROME_INSTALLED=0
+if [[ -f /opt/google/chrome/google-chrome ]] || command -v google-chrome-stable >/dev/null 2>&1; then
+    CHROME_INSTALLED=1
+    ok "Google Chrome already installed."
+fi
+
+if [[ "$CHROME_INSTALLED" -eq 0 ]]; then
+    # Add Google Chrome signing key
+    if [[ ! -f /usr/share/keyrings/google-chrome.gpg ]]; then
+        wget -qO- https://dl.google.com/linux/linux_signing_key.pub \
+            | gpg --dearmor > /usr/share/keyrings/google-chrome.gpg 2>/dev/null || true
+    fi
+
+    # Add Google Chrome repo
+    echo "deb [arch=${DEB_ARCH} signed-by=/usr/share/keyrings/google-chrome.gpg] https://dl.google.com/linux/chrome/deb/ stable main" \
+        > /etc/apt/sources.list.d/google-chrome.list
+
+    apt-get update -qq
+
+    DEBIAN_FRONTEND=noninteractive apt-get install -y \
+        -o Dpkg::Options::="--force-confdef" \
+        -o Dpkg::Options::="--force-confold" \
+        google-chrome-stable 2>/dev/null && {
+        CHROME_INSTALLED=1
+        ok "Google Chrome installed."
+    } || {
+        warn "Google Chrome not available for $DEB_ARCH — using Chromium only."
+        rm -f /etc/apt/sources.list.d/google-chrome.list
+    }
+fi
+
+# ── Google Chrome proot wrapper ───────────────────────────────────────
+if [[ "$CHROME_INSTALLED" -eq 1 ]]; then
+    msg "Creating Google Chrome proot wrapper..."
+
+    CHROME_BIN=""
+    [[ -f /usr/bin/google-chrome-stable ]] && CHROME_BIN="/usr/bin/google-chrome-stable"
+    [[ -f /usr/bin/google-chrome ]]        && CHROME_BIN="/usr/bin/google-chrome"
+
+    if [[ -n "$CHROME_BIN" ]]; then
+        already_wrapped=0
+        head -n 5 "$CHROME_BIN" 2>/dev/null | grep -q "proot.*wrapper\|no-sandbox.*disable-gpu" && already_wrapped=1
+
+        if [[ "$already_wrapped" -eq 0 ]]; then
+            # Find the real Chrome binary
+            CHROME_REAL=""
+            if [[ -f /opt/google/chrome/google-chrome ]]; then
+                CHROME_REAL="/opt/google/chrome/google-chrome"
+            elif [[ -f "${CHROME_BIN}.real" ]]; then
+                CHROME_REAL="${CHROME_BIN}.real"
+            else
+                cp "$CHROME_BIN" "${CHROME_BIN}.real"
+                chmod +x "${CHROME_BIN}.real"
+                CHROME_REAL="${CHROME_BIN}.real"
+            fi
+
+            cat > "$CHROME_BIN" <<CHRWRAPPER
+#!/bin/sh
+# proot Google Chrome wrapper
+export TMPDIR=/tmp
+export XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-/tmp/runtime-\$(whoami)}
+mkdir -p \$XDG_RUNTIME_DIR 2>/dev/null
+exec "$CHROME_REAL" \\
+  --no-sandbox \\
+  --disable-dev-shm-usage \\
+  --disable-gpu \\
+  --disable-software-rasterizer \\
+  --no-zygote \\
+  --disable-setuid-sandbox \\
+  --password-store=basic \\
+  --use-mock-keychain \\
+  --no-first-run \\
+  --no-default-browser-check \\
+  --disable-breakpad \\
+  --disable-features=WebAuthentication,WebAuthn,SecurePaymentConfirmation \\
+  "\$@"
+CHRWRAPPER
+            chmod +x "$CHROME_BIN"
+            ok "Google Chrome proot wrapper created (calls $CHROME_REAL)"
+        else
+            ok "Google Chrome wrapper already in place."
+        fi
+
+        # Patch .desktop files
+        for df in /usr/share/applications/google-chrome*.desktop; do
+            [[ -f "$df" ]] || continue
+            [[ ! -f "${df}.bak" ]] && cp "$df" "${df}.bak"
+            sed -i "s|^Exec=.*|Exec=$CHROME_BIN --no-sandbox --disable-dev-shm-usage %U|" "$df"
+            ok "Patched: $(basename "$df")"
+        done
+
+        # Ensure at least one .desktop file for Chrome in start menu
+        if [[ ! -f /usr/share/applications/google-chrome.desktop ]] && [[ ! -f /usr/share/applications/google-chrome-stable.desktop ]]; then
+            cat > /usr/share/applications/google-chrome-stable.desktop <<CHRDESK
+[Desktop Entry]
+Type=Application
+Name=Google Chrome
+Comment=Access the Internet
+GenericName=Web Browser
+Exec=$CHROME_BIN --no-sandbox --disable-dev-shm-usage %U
+Icon=google-chrome
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+CHRDESK
+            ok "Created google-chrome-stable.desktop"
+        fi
+
+        update-desktop-database /usr/share/applications 2>/dev/null || true
+    fi
+
+    ok "Google Chrome configuration complete."
+fi
+
+# Detect Chrome .desktop name for panel launcher (used in Section 7)
+CHROME_DESKTOP=""
+[[ -f /usr/share/applications/google-chrome-stable.desktop ]] && CHROME_DESKTOP="google-chrome-stable.desktop"
+[[ -f /usr/share/applications/google-chrome.desktop ]]        && CHROME_DESKTOP="google-chrome.desktop"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -712,8 +891,8 @@ cat > "$XFCE_XML_DIR/xfce4-desktop.xml" <<'DESKTOP_XML'
 DESKTOP_XML
 ok "Desktop background set to solid black."
 
-# ── 7b. XFCE panel with all application launchers ─────────────────────
-msg "Configuring XFCE panel with application launchers..."
+# ── 7b. XFCE bottom dock with all application launchers ───────────────
+msg "Configuring XFCE bottom dock with application launchers..."
 
 # Detect .desktop file names
 CHROMIUM_DESKTOP=""
@@ -732,6 +911,9 @@ for gd in /usr/share/applications/gimp*.desktop; do
     [[ -f "$gd" ]] && GIMP_DESKTOP="$(basename "$gd")" && break
 done
 
+# CHROME_DESKTOP was set in Section 3b (empty string if Chrome not installed)
+CHROME_DESKTOP="${CHROME_DESKTOP:-}"
+
 cat > "$XFCE_XML_DIR/xfce4-panel.xml" <<PANEL_XML
 <?xml version="1.0" encoding="UTF-8"?>
 
@@ -741,16 +923,19 @@ cat > "$XFCE_XML_DIR/xfce4-panel.xml" <<PANEL_XML
     <value type="int" value="1"/>
     <property name="dark-mode" type="bool" value="true"/>
     <property name="panel-1" type="empty">
-      <property name="position" type="string" value="p=6;x=0;y=0"/>
+      <property name="position" type="string" value="p=10;x=0;y=0"/>
       <property name="length" type="uint" value="100"/>
       <property name="position-locked" type="bool" value="true"/>
       <property name="icon-size" type="uint" value="0"/>
-      <property name="size" type="uint" value="30"/>
+      <property name="size" type="uint" value="40"/>
+      <property name="mode" type="uint" value="0"/>
+      <property name="autohide-behavior" type="uint" value="0"/>
       <property name="plugin-ids" type="array">
         <value type="int" value="1"/>
         <value type="int" value="2"/>
         <value type="int" value="3"/>
         <value type="int" value="4"/>
+        <value type="int" value="14"/>
         <value type="int" value="5"/>
         <value type="int" value="6"/>
         <value type="int" value="7"/>
@@ -781,6 +966,11 @@ cat > "$XFCE_XML_DIR/xfce4-panel.xml" <<PANEL_XML
     <property name="plugin-4" type="string" value="launcher">
       <property name="items" type="array">
         <value type="string" value="${CHROMIUM_DESKTOP:-chromium.desktop}"/>
+      </property>
+    </property>
+    <property name="plugin-14" type="string" value="launcher">
+      <property name="items" type="array">
+        <value type="string" value="${CHROME_DESKTOP:-google-chrome-stable.desktop}"/>
       </property>
     </property>
     <property name="plugin-5" type="string" value="launcher">
@@ -827,7 +1017,35 @@ cat > "$XFCE_XML_DIR/xfce4-panel.xml" <<PANEL_XML
   </property>
 </channel>
 PANEL_XML
-ok "Panel: Menu | Terminal | Files | Chromium | VSCode | LibreOffice | GIMP | Blender | Tasklist | Systray | Volume | Clock"
+ok "Bottom dock: Menu | Terminal | Files | Chromium | Chrome | VSCode | LibreOffice | GIMP | Blender | Tasklist | Systray | Volume | Clock"
+
+# ── 7b2. Create panel launcher directories ────────────────────────────
+# Some XFCE versions need .desktop files in ~/.config/xfce4/panel/launcher-N/
+msg "Creating panel launcher directories..."
+
+PANEL_DIR="/root/.config/xfce4/panel"
+mkdir -p "$PANEL_DIR"
+
+_link_launcher() {
+    local plugin_id=$1 desktop_name=$2
+    local launcher_dir="$PANEL_DIR/launcher-$plugin_id"
+    mkdir -p "$launcher_dir"
+    local src="/usr/share/applications/$desktop_name"
+    if [[ -f "$src" ]]; then
+        cp "$src" "$launcher_dir/"
+        ok "Launcher $plugin_id: $desktop_name"
+    fi
+}
+
+_link_launcher 2  "xfce4-terminal.desktop"
+_link_launcher 3  "thunar.desktop"
+_link_launcher 4  "${CHROMIUM_DESKTOP:-chromium.desktop}"
+_link_launcher 14 "${CHROME_DESKTOP:-google-chrome-stable.desktop}"
+_link_launcher 5  "code.desktop"
+_link_launcher 6  "${LIBREOFFICE_DESKTOP:-libreoffice-startcenter.desktop}"
+_link_launcher 7  "${GIMP_DESKTOP:-gimp.desktop}"
+_link_launcher 8  "${BLENDER_DESKTOP:-blender.desktop}"
+ok "Panel launcher directories created."
 
 # ── 7c. Apply dark theme with Humanity icons ──────────────────────────
 msg "Setting dark theme with Humanity icons..."
@@ -938,6 +1156,7 @@ echo ""
 printf "  ${BOLD}Applications${NC}\n"
 printf "  ${DIM}──────────────────────────────────────────────${NC}\n"
 _check "Chromium"           "command -v chromium || command -v chromium-browser" "echo 'installed'"
+_check "Google Chrome"      "command -v google-chrome-stable || command -v google-chrome" "echo 'installed'"
 _check "Visual Studio Code" "test -f /usr/share/code/code"  "/usr/share/code/code --version 2>/dev/null | head -1 || echo 'installed'"
 _check "Blender"            "command -v blender"       "blender --version 2>/dev/null | head -1"
 _check "GIMP"               "command -v gimp"          "gimp --version 2>/dev/null | head -1"
@@ -953,6 +1172,8 @@ _check "Environment vars"   "grep -q ELECTRON_DISABLE_SANDBOX /etc/environment" 
 _check "VSCode argv.json"   "test -f /root/.vscode/argv.json"                                                      "echo 'configured'"
 _check "VSCode wrapper"     "head -3 /usr/bin/code 2>/dev/null | grep -q no-sandbox"                               "echo '/usr/bin/code'"
 _check "Chromium wrapper"   "head -5 /usr/bin/chromium 2>/dev/null | grep -q no-sandbox || head -5 /usr/bin/chromium-browser 2>/dev/null | grep -q no-sandbox" "echo 'wrapped'"
+_check "Chrome wrapper"     "head -5 /usr/bin/google-chrome-stable 2>/dev/null | grep -q no-sandbox || head -5 /usr/bin/google-chrome 2>/dev/null | grep -q no-sandbox" "echo 'wrapped'"
+_check "/dev/shm"           "test -d /dev/shm"                                                                  "echo 'exists'"
 _check "Default browser"    "test -f /root/.config/xfce4/helpers.rc"                                                "echo 'Chromium'"
 echo ""
 
@@ -968,7 +1189,8 @@ echo ""
 printf "  ${BOLD}Desktop Customization${NC}\n"
 printf "  ${DIM}──────────────────────────────────────────────${NC}\n"
 _check "Black wallpaper"    "test -f $XFCE_XML_DIR/xfce4-desktop.xml"   "echo 'configured'"
-_check "Panel + launchers"  "test -f $XFCE_XML_DIR/xfce4-panel.xml"     "echo 'configured'"
+_check "Panel + launchers"  "test -f $XFCE_XML_DIR/xfce4-panel.xml"     "echo 'bottom dock'"
+_check "Launcher dirs"      "test -d /root/.config/xfce4/panel/launcher-2" "echo 'configured'"
 _check "Humanity icons"     "test -d /usr/share/icons/Humanity"          "echo 'Humanity'"
 _check "Dark theme"         "test -f $XFCE_XML_DIR/xsettings.xml"       "echo 'Adwaita-dark'"
 _check "VNC xstartup"       "test -f /root/.vnc/xstartup"               "echo 'configured'"
@@ -1001,11 +1223,13 @@ cat <<'DONE'
          → Open the Termux:X11 app
 
     3. Inside the desktop:
-       • Panel (top): Menu | Terminal | Files | Chromium | VSCode |
-                      LibreOffice | GIMP | Blender | Tasklist | Volume | Clock
+       • Bottom dock: Menu | Terminal | Files | Chromium | Chrome |
+                     VSCode | LibreOffice | GIMP | Blender |
+                     Tasklist | Volume | Clock
        • Or launch from terminal:
            code .
            chromium
+           google-chrome-stable
            gimp
            blender
            libreoffice
@@ -1035,5 +1259,18 @@ cat <<'DONE'
 
   If VSCode shows a keyring unlock dialog:
     → Just cancel it. password-store=basic is already configured.
+
+  VNC won't connect on second launch?
+    → Run:  bash ~/stop-ubuntu.sh  first, then start again.
+    → The stop script cleans up stale VNC locks and PID files.
+
+  Termux keeps getting killed (error 9)?
+    → Disable battery optimization for Termux in Android Settings:
+      Settings → Apps → Termux → Battery → Unrestricted
+    → Also ensure Termux has a persistent notification (wake lock).
+
+  Google Chrome not available?
+    → Chrome for Linux may not support your CPU architecture.
+    → Chromium works the same way and is always available.
 
 DONE
