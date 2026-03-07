@@ -27,6 +27,24 @@ cat <<'BANNER'
 BANNER
 printf "${NC}\n"
 
+# ── Re-run detection ───────────────────────────────────────────────────
+# Check if all core Termux packages are already installed.
+# If so, skip pkg update/install and go straight to configuration.
+_pkg_ok() { dpkg -s "$1" &>/dev/null; }
+
+CORE_PKGS_PRESENT=1
+for _p in proot-distro pulseaudio tigervnc; do
+    if ! _pkg_ok "$_p"; then
+        CORE_PKGS_PRESENT=0
+        break
+    fi
+done
+
+if [[ "$CORE_PKGS_PRESENT" -eq 1 ]]; then
+    ok "Core Termux packages already installed — skipping pkg update/install."
+    ok "(Re-run detected. Will regenerate launcher scripts & config.)"
+else
+
 # ══════════════════════════════════════════════════════════════════════
 #  1. Update Termux
 # ══════════════════════════════════════════════════════════════════════
@@ -53,6 +71,27 @@ pkg install -y termux-api 2>/dev/null || \
     warn "termux-api not installed — wake-lock unavailable."
 
 ok "Termux packages installed."
+
+fi  # end CORE_PKGS_PRESENT check
+
+# ══════════════════════════════════════════════════════════════════════
+#  2b. Grant storage access
+# ══════════════════════════════════════════════════════════════════════
+msg "Ensuring Termux storage access..."
+if [[ -d "$HOME/storage" ]]; then
+    ok "Storage access already granted."
+else
+    warn "Requesting storage permission — tap 'Allow' on the Android prompt."
+    termux-setup-storage 2>/dev/null || true
+    # Give user time to respond to the permission dialog
+    sleep 3
+    if [[ -d "$HOME/storage" ]]; then
+        ok "Storage access granted."
+    else
+        warn "Storage permission may not have been granted."
+        warn "Run 'termux-setup-storage' manually if you need shared storage access."
+    fi
+fi
 
 # ══════════════════════════════════════════════════════════════════════
 #  3. Choose Ubuntu version + install via proot-distro
@@ -107,9 +146,22 @@ fi
 
 ok "Selected: $UBUNTU_ALIAS"
 
-msg "Installing $UBUNTU_ALIAS via proot-distro..."
+msg "Checking $UBUNTU_ALIAS installation status..."
 if proot-distro list 2>/dev/null | grep -q "${UBUNTU_ALIAS}.*Installed"; then
-    ok "$UBUNTU_ALIAS is already installed."
+    printf "\n  ${YELLOW}⚠ $UBUNTU_ALIAS is already installed.${NC}\n\n"
+    printf "  ${BOLD}[1]${NC} Use existing installation ${DIM}(keeps all files & apps — recommended)${NC}\n"
+    printf "  ${BOLD}[2]${NC} Remove and reinstall ${DIM}(fresh start — deletes everything inside proot)${NC}\n\n"
+    printf "  Choice [1]: "
+    read -r _reuse_choice
+
+    if [[ "${_reuse_choice:-1}" == "2" ]]; then
+        warn "Removing existing $UBUNTU_ALIAS installation..."
+        proot-distro remove "$UBUNTU_ALIAS"
+        proot-distro install "$UBUNTU_ALIAS"
+        ok "$UBUNTU_ALIAS reinstalled (fresh)."
+    else
+        ok "Using existing $UBUNTU_ALIAS installation."
+    fi
 else
     proot-distro install "$UBUNTU_ALIAS"
     ok "$UBUNTU_ALIAS installed."
@@ -142,6 +194,16 @@ else
     warn "Place it at $HOME/setup-proot.sh and re-run, or copy it manually:"
     warn "  cp setup-proot.sh $UBUNTU_ROOT/root/setup-proot.sh"
 fi
+
+# Also copy gdrive-mount.sh into proot if present
+for candidate in "$SCRIPT_DIR/gdrive-mount.sh" "$HOME/gdrive-mount.sh"; do
+    if [[ -f "$candidate" ]]; then
+        cp "$candidate" "$UBUNTU_ROOT/root/gdrive-mount.sh"
+        chmod +x "$UBUNTU_ROOT/root/gdrive-mount.sh"
+        ok "gdrive-mount.sh copied into Ubuntu proot at /root/gdrive-mount.sh"
+        break
+    fi
+done
 
 # Also copy backup script if present
 for candidate in "$SCRIPT_DIR/proot-backup.sh" "$HOME/proot-backup.sh"; do
