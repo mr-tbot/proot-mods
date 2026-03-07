@@ -1,0 +1,563 @@
+#!/bin/bash
+# ╔════════════════════════════════════════════════════════════════════╗
+# ║  Browser Repair Script — Proot Ubuntu                           ║
+# ║  Reinstalls Chromium v89 (Debian Buster) and/or Firefox         ║
+# ║  (Mozilla APT) with proot wrappers and compat libraries.        ║
+# ║  Uses the exact same approach as setup-proot.sh Section 3.      ║
+# ║                                                                  ║
+# ║  Run INSIDE the proot environment:                               ║
+# ║    bash /root/chromium-repair.sh                                 ║
+# ╚════════════════════════════════════════════════════════════════════╝
+set -euo pipefail
+
+# ── Colors ────────────────────────────────────────────────────────────
+RED='\033[0;31m'; GREEN='\033[0;32m'; YELLOW='\033[0;33m'; CYAN='\033[0;36m'
+BOLD='\033[1m'; DIM='\033[2m'; NC='\033[0m'
+
+msg()  { printf "  ${CYAN}▸${NC} %s\n" "$*"; }
+ok()   { printf "  ${GREEN}✔${NC} %s\n" "$*"; }
+warn() { printf "  ${YELLOW}⚠${NC} %s\n" "$*"; }
+err()  { printf "  ${RED}✘${NC} %s\n" "$*"; }
+die()  { err "$*"; exit 1; }
+
+printf "\n${BOLD}╔════════════════════════════════════════════════════════════╗${NC}\n"
+printf "${BOLD}║   Browser Repair — Proot Ubuntu                           ║${NC}\n"
+printf "${BOLD}║   Chromium v89 / Firefox / Both                           ║${NC}\n"
+printf "${BOLD}╚════════════════════════════════════════════════════════════╝${NC}\n\n"
+
+# ── Must run as root inside proot ─────────────────────────────────────
+[[ "$(id -u)" -eq 0 ]] || die "Must run as root. Try: sudo bash $0"
+
+# ── Architecture detection ────────────────────────────────────────────
+ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
+case "$ARCH" in
+    amd64|x86_64)  DEB_ARCH="amd64" ;;
+    arm64|aarch64) DEB_ARCH="arm64" ;;
+    armhf|armv7*)  DEB_ARCH="armhf" ;;
+    *)             DEB_ARCH="arm64"; warn "Unknown arch '$ARCH' — defaulting to arm64" ;;
+esac
+ok "Architecture: $ARCH (deb: $DEB_ARCH)"
+
+# ── Browser choice ────────────────────────────────────────────────────
+printf "\n${BOLD}${CYAN}"
+cat <<'BROWSERMENU'
+  ┌─────────────────────────────────────────────────────┐
+  │   Which browser(s) to repair/reinstall?             │
+  │                                                     │
+  │   [1] Chromium v89  (recommended — proven in proot) │
+  │   [2] Firefox       (Mozilla official APT)          │
+  │   [3] Both                                          │
+  └─────────────────────────────────────────────────────┘
+BROWSERMENU
+printf "${NC}"
+INSTALL_CHROMIUM=0
+INSTALL_FIREFOX=0
+
+while true; do
+    read -rp "  Choose [1/2/3] (default: 1): " _browser_choice
+    _browser_choice="${_browser_choice:-1}"
+    case "$_browser_choice" in
+        1) INSTALL_CHROMIUM=1; break ;;
+        2) INSTALL_FIREFOX=1; break ;;
+        3) INSTALL_CHROMIUM=1; INSTALL_FIREFOX=1; break ;;
+        *) echo "  Invalid choice. Enter 1, 2, or 3." ;;
+    esac
+done
+
+if [[ "$INSTALL_CHROMIUM" -eq 1 ]] && [[ "$INSTALL_FIREFOX" -eq 1 ]]; then
+    ok "Repairing: Chromium v89 + Firefox"
+elif [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
+    ok "Repairing: Chromium v89"
+else
+    ok "Repairing: Firefox"
+fi
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 1: Nuclear cleanup — remove ALL snap traces
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 1: Nuclear cleanup — snap + old browser remnants...${NC}\n\n"
+
+# Remove all snaps
+if command -v snap >/dev/null 2>&1; then
+    msg "Removing all installed snaps..."
+    snap remove --purge firefox 2>/dev/null || true
+    snap remove --purge chromium 2>/dev/null || true
+    for _snap in $(snap list 2>/dev/null | awk 'NR>1{print $1}' | grep -v "^core" | grep -v "^snapd"); do
+        snap remove --purge "$_snap" 2>/dev/null || true
+    done
+    for _snap in $(snap list 2>/dev/null | awk 'NR>1{print $1}'); do
+        snap remove --purge "$_snap" 2>/dev/null || true
+    done
+    ok "All snaps removed"
+fi
+
+# Purge snapd
+msg "Purging snapd..."
+apt-get purge -y snapd squashfuse snap-confine ubuntu-core-launcher 2>/dev/null || true
+ok "snapd purged"
+
+# Remove snap stubs for chromium + firefox
+msg "Removing snap stubs..."
+apt-get purge -y chromium-browser chromium-browser-l10n \
+    chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra 2>/dev/null || true
+apt-get purge -y firefox 2>/dev/null || true
+for _bin in /usr/bin/chromium-browser /usr/bin/chromium /usr/bin/firefox; do
+    if [[ -f "$_bin" ]] && head -20 "$_bin" 2>/dev/null | grep -qi "snap"; then
+        rm -f "$_bin"
+    fi
+done
+ok "Snap stubs removed"
+
+# Remove any existing Chromium (to do a clean reinstall)
+msg "Removing existing Chromium packages..."
+apt-mark unhold chromium chromium-common 2>/dev/null || true
+dpkg --purge --force-depends chromium chromium-common 2>/dev/null || true
+ok "Old Chromium removed"
+
+# Remove snap directories
+rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd \
+       ~/snap /root/snap /tmp/snap* 2>/dev/null || true
+
+# Clean up old repo configs
+rm -f /etc/apt/sources.list.d/debian-chromium.list 2>/dev/null || true
+rm -f /etc/apt/sources.list.d/mozilla-firefox.list 2>/dev/null || true
+rm -f /etc/apt/preferences.d/debian-chromium.pref 2>/dev/null || true
+rm -f /etc/apt/preferences.d/mozilla-firefox.pref 2>/dev/null || true
+rm -f /usr/share/keyrings/debian-archive-all.gpg 2>/dev/null || true
+rm -f /usr/share/keyrings/packages.mozilla.org.gpg 2>/dev/null || true
+rm -f /etc/apt/trusted.gpg.d/debian*.gpg 2>/dev/null || true
+
+apt-get autoremove -y 2>/dev/null || true
+ok "All snap directories and old configs cleaned"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 2: Block snapd + snap-stub chromium permanently
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 2: Blocking snapd + snap-stub chromium permanently...${NC}\n\n"
+
+cat > /etc/apt/preferences.d/no-snapd.pref <<'NOSNAP'
+Package: snapd
+Pin: release *
+Pin-Priority: -10
+NOSNAP
+
+cat > /etc/apt/preferences.d/no-snap-chromium.pref <<'NOSNAPCHROM'
+Package: chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra
+Pin: release o=Ubuntu
+Pin-Priority: -1
+
+Package: chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra
+Pin: release *
+Pin-Priority: -10
+NOSNAPCHROM
+
+apt-mark hold snapd 2>/dev/null || true
+
+cat > /etc/apt/apt.conf.d/99no-snap <<'APTNOSNAP'
+DPkg::Post-Invoke {"if [ -x /usr/bin/snap ]; then rm -f /usr/bin/snap; fi";};
+APTNOSNAP
+ok "snapd + snap-chromium blocked permanently"
+
+# Fix broken dpkg state
+dpkg --configure -a 2>/dev/null || true
+apt-get clean 2>/dev/null || true
+
+
+# ── Chromium v89 Repair ──────────────────────────────────────────────
+if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 3: Add Debian Buster archive repo
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 3: Adding Debian Buster archive repo...${NC}\n\n"
+
+# Remove any existing Debian Buster sources to start clean
+rm -f /etc/apt/sources.list.d/debian-chromium.sources 2>/dev/null || true
+
+cat > /etc/apt/sources.list.d/debian-chromium.sources <<'DEBSRC'
+Types: deb
+URIs: http://archive.debian.org/debian/
+Suites: buster
+Components: main
+Signed-By:
+Trusted: yes
+
+Types: deb
+URIs: http://archive.debian.org/debian/
+Suites: buster-updates
+Components: main
+Signed-By:
+Trusted: yes
+DEBSRC
+ok "Debian Buster archive repo added (DEB822 format, Trusted: yes)"
+
+msg "Updating apt..."
+apt-get update 2>&1 | tail -5
+ok "apt updated"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 4: Download Chromium v89 + compat libraries
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 4: Downloading Chromium v89 + Buster compat libraries...${NC}\n\n"
+
+# Ubuntu has newer library sonames than Debian Buster.  We download the
+# specific Buster compat libraries — they coexist safely alongside
+# Ubuntu's own libs because they have different soname versions.
+
+_DEB_DIR="/tmp/chromium-debs"
+rm -rf "$_DEB_DIR" && mkdir -p "$_DEB_DIR"
+_BASE="http://archive.debian.org/debian/pool/main"
+
+# Chromium itself (v89, Debian Buster build)
+msg "Downloading Chromium v89 .debs..."
+wget -q "${_BASE}/c/chromium/chromium_89.0.4389.114-1~deb10u1_${DEB_ARCH}.deb"             -O "$_DEB_DIR/chromium.deb" && ok "chromium.deb" || die "Failed to download chromium.deb"
+wget -q "${_BASE}/c/chromium/chromium-common_89.0.4389.114-1~deb10u1_${DEB_ARCH}.deb"      -O "$_DEB_DIR/common.deb"   && ok "common.deb"   || die "Failed to download common.deb"
+
+# Compat libraries from Debian Buster (different sonames from Ubuntu)
+msg "Downloading Buster compat libraries..."
+wget -q "${_BASE}/libe/libevent/libevent-2.1-6_2.1.8-stable-4_${DEB_ARCH}.deb"             -O "$_DEB_DIR/libevent-2.1-6.deb"   && ok "libevent-2.1-6"
+wget -q "${_BASE}/i/icu/libicu63_63.1-6+deb10u3_${DEB_ARCH}.deb"                           -O "$_DEB_DIR/libicu63.deb"          && ok "libicu63"
+wget -q "${_BASE}/libj/libjsoncpp/libjsoncpp1_1.7.4-3_${DEB_ARCH}.deb"                     -O "$_DEB_DIR/libjsoncpp1.deb"       && ok "libjsoncpp1"
+wget -q "${_BASE}/r/re2/libre2-5_20190101+dfsg-2_${DEB_ARCH}.deb"                          -O "$_DEB_DIR/libre2-5.deb"          && ok "libre2-5"
+wget -q "${_BASE}/libv/libvpx/libvpx5_1.7.0-3+deb10u1_${DEB_ARCH}.deb"                     -O "$_DEB_DIR/libvpx5.deb"           && ok "libvpx5"
+wget -q "${_BASE}/f/ffmpeg/libavcodec58_4.1.9-0+deb10u1_${DEB_ARCH}.deb"                   -O "$_DEB_DIR/libavcodec58.deb"      && ok "libavcodec58"
+wget -q "${_BASE}/f/ffmpeg/libavformat58_4.1.9-0+deb10u1_${DEB_ARCH}.deb"                  -O "$_DEB_DIR/libavformat58.deb"     && ok "libavformat58"
+wget -q "${_BASE}/f/ffmpeg/libavutil56_4.1.9-0+deb10u1_${DEB_ARCH}.deb"                    -O "$_DEB_DIR/libavutil56.deb"       && ok "libavutil56"
+wget -q "${_BASE}/f/ffmpeg/libswresample3_4.1.9-0+deb10u1_${DEB_ARCH}.deb"                 -O "$_DEB_DIR/libswresample3.deb"    && ok "libswresample3"
+wget -q "${_BASE}/a/aom/libaom0_1.0.0-3_${DEB_ARCH}.deb"                                   -O "$_DEB_DIR/libaom0.deb"           && ok "libaom0"
+wget -q "${_BASE}/c/codec2/libcodec2-0.8.1_0.8.1-2_${DEB_ARCH}.deb"                        -O "$_DEB_DIR/libcodec2-0.8.1.deb"   && ok "libcodec2-0.8.1"
+wget -q "${_BASE}/x/x264/libx264-155_0.155.2917+git0a84d98-2_${DEB_ARCH}.deb"              -O "$_DEB_DIR/libx264-155.deb"       && ok "libx264-155"
+wget -q "${_BASE}/x/x265/libx265-165_2.9-4_${DEB_ARCH}.deb"                                -O "$_DEB_DIR/libx265-165.deb"       && ok "libx265-165"
+wget -q "${_BASE}/libs/libssh/libssh-gcrypt-4_0.8.7-1+deb10u1_${DEB_ARCH}.deb"             -O "$_DEB_DIR/libssh-gcrypt-4.deb"   && ok "libssh-gcrypt-4"
+
+ok "All .deb files downloaded"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 5: Install compat libraries
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 5: Installing Buster compat libraries...${NC}\n\n"
+
+dpkg --force-depends -i \
+    "$_DEB_DIR/libevent-2.1-6.deb" \
+    "$_DEB_DIR/libicu63.deb" \
+    "$_DEB_DIR/libjsoncpp1.deb" \
+    "$_DEB_DIR/libre2-5.deb" \
+    "$_DEB_DIR/libvpx5.deb" \
+    "$_DEB_DIR/libavutil56.deb" \
+    "$_DEB_DIR/libswresample3.deb" \
+    "$_DEB_DIR/libaom0.deb" \
+    "$_DEB_DIR/libcodec2-0.8.1.deb" \
+    "$_DEB_DIR/libx264-155.deb" \
+    "$_DEB_DIR/libx265-165.deb" \
+    "$_DEB_DIR/libavcodec58.deb" \
+    "$_DEB_DIR/libavformat58.deb" \
+    "$_DEB_DIR/libssh-gcrypt-4.deb" 2>&1
+ok "Buster compat libraries installed"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 6: Install Chromium v89
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 6: Installing Chromium v89...${NC}\n\n"
+
+dpkg --force-depends -i "$_DEB_DIR/common.deb" "$_DEB_DIR/chromium.deb" 2>&1
+
+if ! dpkg -s chromium 2>/dev/null | grep -q "Status: install ok installed"; then
+    die "Chromium installation failed!"
+fi
+ok "Chromium v89 installed: $(dpkg -s chromium 2>/dev/null | grep ^Version | head -1)"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 7: Fix gdk-pixbuf symlink
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 7: Fixing gdk-pixbuf symlink...${NC}\n\n"
+
+_LIBDIR="/usr/lib/aarch64-linux-gnu"
+[[ "$DEB_ARCH" == "amd64" ]] && _LIBDIR="/usr/lib/x86_64-linux-gnu"
+_GDK_REAL="$(ls "${_LIBDIR}"/libgdk_pixbuf-2.0.so.0.* 2>/dev/null | head -1)"
+if [[ -n "$_GDK_REAL" ]]; then
+    ln -sf "$_GDK_REAL" "${_LIBDIR}/libgdk_pixbuf-2.0.so.0"
+    ldconfig
+    ok "gdk-pixbuf symlink fixed → $(basename "$_GDK_REAL")"
+else
+    warn "Could not find libgdk_pixbuf .so — symlink not created"
+fi
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 8: Verify no missing libraries
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 8: Verifying no missing libraries...${NC}\n\n"
+
+_missing="$(ldd /usr/lib/chromium/chromium 2>&1 | grep 'not found' || true)"
+if [[ -z "$_missing" ]]; then
+    ok "No missing libraries — Chromium binary is ready"
+else
+    warn "Missing libraries detected:"
+    echo "$_missing"
+fi
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 9: Configure proot flags
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 9: Configuring proot flags...${NC}\n\n"
+
+# The Debian Chromium launcher (/usr/bin/chromium) sources all files in
+# /etc/chromium.d/ as shell scripts.  We add a proot-specific config.
+mkdir -p /etc/chromium.d
+cat > /etc/chromium.d/proot-flags <<'PROOTFLAGS'
+# Proot environment flags — required for Chromium to run inside proot-distro
+# Core sandbox disabling (proot can't create namespaces)
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-sandbox"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-zygote"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-setuid-sandbox"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-seccomp-filter-sandbox"
+
+# Renderer stability
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-dev-shm-usage"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --in-process-gpu"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --renderer-process-limit=2"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-site-isolation-trials"
+
+# GPU disabled (no real GPU in proot)
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-gpu-compositing"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-software-rasterizer"
+
+# Disable problematic features in ONE flag (Chromium uses only the LAST --disable-features)
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-features=VizDisplayCompositor,WebAuthentication,WebAuthn,WebAuthenticationConditionalUI,SecurePaymentConfirmation,AudioServiceOutOfProcess,IsolateOrigins,WebOTP,DigitalCredentials"
+
+# Kill breakpad crash reporter (useless in proot)
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --disable-breakpad"
+
+# Keychain/auth workarounds
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --password-store=basic"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --use-mock-keychain"
+
+# Skip first run
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-first-run"
+export CHROMIUM_FLAGS="$CHROMIUM_FLAGS --no-default-browser-check"
+PROOTFLAGS
+ok "Proot flags written to /etc/chromium.d/proot-flags"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 10: Ensure runtime directories + hold packages
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 10: Runtime dirs + package hold...${NC}\n\n"
+
+mkdir -p /dev/shm && chmod 1777 /dev/shm
+mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
+ok "Runtime directories ensured (/dev/shm, /tmp/runtime-root)"
+
+apt-mark hold chromium chromium-common 2>/dev/null || true
+ok "Chromium packages held (no accidental upgrades)"
+
+# .desktop file
+cat > /usr/share/applications/chromium.desktop <<'CHROMDESK'
+[Desktop Entry]
+Type=Application
+Name=Chromium Web Browser
+Comment=Access the Internet
+GenericName=Web Browser
+Exec=/usr/bin/chromium %U
+Icon=chromium
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=Chromium-browser
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=/usr/bin/chromium --new-window
+
+[Desktop Action new-private-window]
+Name=New Private Window
+Exec=/usr/bin/chromium --incognito
+CHROMDESK
+ok "Chromium .desktop file written"
+
+update-desktop-database /usr/share/applications 2>/dev/null || true
+
+# Clean up downloaded .debs
+rm -rf "$_DEB_DIR"
+
+fi  # end INSTALL_CHROMIUM
+
+
+# ── Firefox Repair (Mozilla APT) ─────────────────────────────────────
+if [[ "$INSTALL_FIREFOX" -eq 1 ]]; then
+
+printf "\n${BOLD}Firefox Repair: Installing from Mozilla APT...${NC}\n\n"
+
+# Remove any existing Firefox (snap stub or broken install)
+msg "Removing old Firefox..."
+apt-get purge -y firefox 2>/dev/null || true
+for _bin in /usr/bin/firefox; do
+    if [[ -f "$_bin" ]] && head -20 "$_bin" 2>/dev/null | grep -qi "snap"; then
+        rm -f "$_bin"
+    fi
+done
+rm -f /usr/bin/firefox.real 2>/dev/null || true
+ok "Old Firefox removed"
+
+# Add Mozilla GPG key
+msg "Adding Mozilla APT signing key..."
+wget -qO- https://packages.mozilla.org/apt/repo-signing-key.gpg \
+    | gpg --dearmor > /usr/share/keyrings/packages.mozilla.org.gpg 2>/dev/null
+ok "Mozilla GPG key added"
+
+# Add Mozilla APT repository
+echo "deb [signed-by=/usr/share/keyrings/packages.mozilla.org.gpg] https://packages.mozilla.org/apt mozilla main" \
+    > /etc/apt/sources.list.d/mozilla-firefox.list
+
+# Pin Mozilla's Firefox higher than Ubuntu's snap stub
+cat > /etc/apt/preferences.d/mozilla-firefox.pref <<'MOZPIN'
+Package: firefox*
+Pin: origin packages.mozilla.org
+Pin-Priority: 1001
+MOZPIN
+
+msg "Updating apt..."
+apt-get update 2>&1 | tail -5
+ok "apt updated"
+
+msg "Installing Firefox..."
+DEBIAN_FRONTEND=noninteractive apt-get install -y \
+    -o Dpkg::Options::="--force-confdef" \
+    -o Dpkg::Options::="--force-confold" \
+    firefox 2>&1
+
+if ! command -v firefox >/dev/null 2>&1; then
+    die "Firefox installation failed!"
+fi
+ok "Firefox installed: $(firefox --version 2>/dev/null || echo 'ok')"
+
+# Create proot wrapper
+msg "Creating Firefox proot wrapper..."
+FIREFOX_BIN="/usr/bin/firefox"
+FIREFOX_REAL="${FIREFOX_BIN}.real"
+if [[ ! -f "$FIREFOX_REAL" ]]; then
+    cp "$FIREFOX_BIN" "$FIREFOX_REAL"
+    chmod +x "$FIREFOX_REAL"
+fi
+
+cat > "$FIREFOX_BIN" <<FFWRAPPER
+#!/bin/sh
+# proot Firefox wrapper — disables sandbox (proot can't create namespaces)
+export MOZ_FAKE_NO_SANDBOX=1
+export MOZ_DISABLE_CONTENT_SANDBOX=1
+export MOZ_DISABLE_GMP_SANDBOX=1
+export MOZ_DISABLE_GPU_SANDBOX=1
+export MOZ_DISABLE_RDD_SANDBOX=1
+export MOZ_DISABLE_SOCKET_PROCESS_SANDBOX=1
+export TMPDIR=/tmp
+export XDG_RUNTIME_DIR=\${XDG_RUNTIME_DIR:-/tmp/runtime-\$(whoami)}
+mkdir -p "\$XDG_RUNTIME_DIR" 2>/dev/null
+exec "$FIREFOX_REAL" --no-remote "\$@"
+FFWRAPPER
+chmod +x "$FIREFOX_BIN"
+ok "Firefox proot wrapper created"
+
+# Firefox .desktop file
+cat > /usr/share/applications/firefox.desktop <<'FFDESK'
+[Desktop Entry]
+Type=Application
+Name=Firefox Web Browser
+Comment=Browse the World Wide Web
+GenericName=Web Browser
+Exec=firefox %u
+Icon=firefox
+Terminal=false
+Categories=Network;WebBrowser;
+MimeType=text/html;text/xml;application/xhtml+xml;x-scheme-handler/http;x-scheme-handler/https;
+StartupNotify=true
+StartupWMClass=firefox
+Actions=new-window;new-private-window;
+
+[Desktop Action new-window]
+Name=New Window
+Exec=firefox --new-window
+
+[Desktop Action new-private-window]
+Name=New Private Window
+Exec=firefox --private-window
+FFDESK
+ok "Firefox .desktop file written"
+
+update-desktop-database /usr/share/applications 2>/dev/null || true
+
+fi  # end INSTALL_FIREFOX
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  Final verification
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Final verification...${NC}\n\n"
+
+PASS=0; FAIL=0
+_verify() {
+    local label="$1" cmd="$2"
+    if eval "$cmd" >/dev/null 2>&1; then
+        ok "$label"; ((PASS++))
+    else
+        err "$label"; ((FAIL++))
+    fi
+}
+
+_verify "snapd NOT installed"          "! command -v snap && ! dpkg -s snapd 2>/dev/null | grep -q 'Status: install ok'"
+_verify "snapd blocked by APT"         "test -f /etc/apt/preferences.d/no-snapd.pref"
+_verify "snap-chromium blocked"        "test -f /etc/apt/preferences.d/no-snap-chromium.pref"
+_verify "/snap/ directory gone"        "test ! -d /snap"
+_verify "/dev/shm exists"             "test -d /dev/shm"
+
+if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
+_verify "chromium binary exists"       "test -f /usr/lib/chromium/chromium"
+_verify "chromium NOT snap stub"       "! head -20 /usr/bin/chromium 2>/dev/null | grep -qi snap"
+_verify "chromium no missing libs"     "test -z \"\$(ldd /usr/lib/chromium/chromium 2>&1 | grep 'not found')\""
+_verify "proot-flags config exists"    "test -f /etc/chromium.d/proot-flags"
+_verify "proot-flags has --no-sandbox" "grep -q 'no-sandbox' /etc/chromium.d/proot-flags"
+_verify "chromium .desktop exists"     "test -f /usr/share/applications/chromium.desktop"
+_verify "chromium packages held"       "apt-mark showhold 2>/dev/null | grep -q chromium"
+_verify "Buster repo configured"       "test -f /etc/apt/sources.list.d/debian-chromium.sources"
+fi
+
+if [[ "$INSTALL_FIREFOX" -eq 1 ]]; then
+_verify "firefox binary exists"        "command -v firefox"
+_verify "firefox NOT snap stub"        "! head -20 /usr/bin/firefox 2>/dev/null | grep -qi snap"
+_verify "firefox wrapper active"       "head -5 /usr/bin/firefox 2>/dev/null | grep -q MOZ_FAKE_NO_SANDBOX"
+_verify "firefox .desktop exists"      "test -f /usr/share/applications/firefox.desktop"
+_verify "Mozilla APT repo configured"  "test -f /etc/apt/sources.list.d/mozilla-firefox.list"
+fi
+
+printf "\n  ─────────────────────────────────────────────\n"
+if [[ "$FAIL" -eq 0 ]]; then
+    printf "  ${GREEN}${BOLD}ALL ${PASS} CHECKS PASSED${NC}\n"
+else
+    printf "  ${GREEN}${PASS} passed${NC}, ${RED}${FAIL} failed${NC}\n"
+fi
+
+printf "\n${BOLD}  Launch:${NC}\n"
+if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
+    printf "    chromium\n"
+fi
+if [[ "$INSTALL_FIREFOX" -eq 1 ]]; then
+    printf "    firefox\n"
+fi
+printf "\n"
+
+printf "${DIM}  Harmless proot warnings (ignore these):${NC}\n"
+printf "${DIM}    - Could not bind NETLINK socket: Permission denied${NC}\n"
+printf "${DIM}    - Failed to connect to the bus: /run/dbus/system_bus_socket${NC}\n"
+printf "${DIM}    - Failed to initialize a udev monitor${NC}\n"
+printf "${DIM}    - Floss manager not present${NC}\n"
+printf "${DIM}    - Fontconfig error: out of memory${NC}\n"
+printf "${DIM}    - getcwd() failed${NC}\n\n"

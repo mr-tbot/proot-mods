@@ -1,6 +1,6 @@
 # Proot Ubuntu Desktop Environment — Full Setup Guide
 
-> **Goal**: Install Ubuntu (22.04 or latest) via Termux `proot-distro`, set up a full XFCE desktop with VSCode, Chromium, Chrome, development tools, media editors, network utilities, Wine, and more — all working correctly inside proot — accessible via **TigerVNC** (recommended) or **Termux:X11**.
+> **Goal**: Install Ubuntu (22.04 or latest) via Termux `proot-distro`, set up a full XFCE desktop with VSCode, Chromium/Firefox (user choice), Chrome, development tools, media editors, network utilities, Wine, and more — all working correctly inside proot — accessible via **TigerVNC** (recommended) or **Termux:X11**.
 
 ---
 
@@ -137,7 +137,7 @@ The script is fully idempotent (safe to re-run). Uses `_is_installed()` / `_all_
 #### Section 0: System Setup
 - Fixes apt sources.list (no-change-plans, ftp → http)
 - Conditional `apt update && apt upgrade` (skips if recently done)
-- Creates `/dev/shm` (needed for Chromium shared memory)
+- Creates `/dev/shm` (needed for Electron/browser shared memory)
 - Creates `~/.Xauthority` (needed for X11 session)
 
 #### Section 1: XFCE Desktop + VNC
@@ -148,30 +148,45 @@ The script is fully idempotent (safe to re-run). Uses `_is_installed()` / `_all_
 - Installs `elementary-xfce-icon-theme` and `humanity-icon-theme`
 - Skips if already present
 
-#### Section 3: Chromium Browser
-**Newest-first strategy** from Debian repositories:
-1. Imports Debian GPG keys + adds repo
-2. Tries **Bookworm** (Debian 12) first — newest Chromium (~v120+)
-3. Falls back to **Bullseye** (Debian 11) — if Bookworm fails
-4. Falls back to **Buster** (Debian 10) — proven stable (v89)
-5. User can also choose: `[1] Try newest first` or `[2] Use Buster directly (stable)`
+#### Section 3: Browser Installation (User Choice)
+**Interactive prompt** — choose Chromium v89, Firefox, or Both:
 
-**Chromium launch chain** (matches Andronix architecture):
-```
-chromium-default (debug wrapper with env logging)
-  → /usr/bin/chromium (main wrapper — adds --no-sandbox, --no-zygote, etc.)
-    → chromium.real (stock Debian launcher)
-      → chromium.d/ config files (default-flags, apikeys, extensions)
-        → /usr/lib/chromium/chromium (ELF binary)
-```
+1. Removes snapd + all snap stubs (Firefox, Chromium)
+2. Blocks snapd + snap-stub chromium permanently via APT preferences
 
-**Key flags**: `--no-sandbox`, `--no-zygote`, `--in-process-gpu`, `--disable-gpu`, `--disable-software-rasterizer`, `--disable-dev-shm-usage`, `--no-first-run`
+**If Chromium selected** — installed from Debian Buster archive (NOT snap):
+3. Adds Debian Buster archive repo (DEB822 format, `Trusted: yes`)
+4. Downloads Chromium v89 .debs + 14 Buster compat libraries from `archive.debian.org`
+5. Installs compat libs with `dpkg --force-depends` (different sonames from Ubuntu’s; coexist safely)
+6. Installs Chromium v89 with `dpkg --force-depends`
+7. Fixes gdk-pixbuf symlink
+8. Configures proot flags via `/etc/chromium.d/proot-flags`
+9. Holds packages to prevent accidental upgrades
 
-Sets Chromium as default browser via `xdg-settings`, `update-alternatives`, and `mimeapps.list`.
+**Why v89?** Chromium v120 (Debian Bullseye) segfaults under proot when renderer
+processes communicate via IPC. Chromium v89 (Debian Buster) has a simpler
+multiprocess model that works reliably, including Google login.
+
+**Proot flags** (sourced by `/usr/bin/chromium` from `/etc/chromium.d/proot-flags`):
+- `--no-sandbox`, `--no-zygote`, `--disable-setuid-sandbox`, `--disable-seccomp-filter-sandbox`
+- `--disable-dev-shm-usage`, `--in-process-gpu`, `--renderer-process-limit=2`
+- `--disable-gpu`, `--disable-gpu-compositing`, `--disable-software-rasterizer`
+- `--disable-features=VizDisplayCompositor,WebAuthentication,WebAuthn,...` (single flag — Chromium uses only the LAST `--disable-features`)
+- `--password-store=basic`, `--use-mock-keychain`, `--no-first-run`
+
+**If Firefox selected** — installed from Mozilla official APT:
+3. Adds Mozilla GPG key + APT repository (`packages.mozilla.org/apt`)
+4. Pins Mozilla Firefox with priority 1001 (overrides Ubuntu snap stub)
+5. Installs `firefox` package
+6. Creates proot wrapper with `MOZ_FAKE_NO_SANDBOX=1` and sandbox-disable env vars
+7. The wrapper calls `/usr/bin/firefox.real` (the actual Mozilla binary)
+
+Sets the primary browser as default via `xdg-settings`, `update-alternatives`, and `mimeapps.list`.
+If both selected, Chromium is the default browser.
 
 #### Section 3b: Google Chrome
 - Installs `google-chrome-stable` from Google's apt repo
-- Creates `--no-sandbox` wrapper similar to Chromium
+- Creates `--no-sandbox` wrapper for proot compatibility
 
 #### Section 4: Visual Studio Code
 - Installs from Microsoft apt repo
@@ -189,6 +204,7 @@ Sets Chromium as default browser via `xdg-settings`, `update-alternatives`, and 
 | **GParted** | `apt install gparted` |
 | **Kdenlive** | `apt install kdenlive` |
 | **Shotcut** | `apt install shotcut` |
+| **OBS Studio** | `apt install obs-studio` |
 | **Thunderbird** | `apt install thunderbird` |
 | **Spotify** | Official client (amd64) or spotifyd + spotify-tui (arm64) |
 | **App Store** | GNOME Software (or GNOME PackageKit fallback) |
@@ -296,7 +312,7 @@ FUSE mounting (`rclone mount`) requires a kernel FUSE module, which is **not ava
 Two methods available during setup:
 
 **Option A — Browser (if VNC desktop is running):**
-rclone opens Chromium/Chrome inside the proot for Google sign-in.
+rclone opens the installed browser inside the proot for Google sign-in.
 
 **Option B — Manual token (headless):**
 rclone prints a URL. Open it on any device (phone, laptop), sign in, paste the token back.
@@ -410,7 +426,7 @@ A single bottom panel (40px height) with these items:
 | 5 | Chrome | Launcher → `google-chrome-stable` |
 | 6 | Thunderbird | Email client |
 | 7 | VSCode | Launcher → `code` wrapper |
-| 8 | Chromium | Launcher → `chromium-default` wrapper |
+| 8 | Chromium/Firefox | Launcher → `/usr/bin/chromium` (sources `/etc/chromium.d/proot-flags`) |
 | 9 | LibreOffice | `libreoffice-writer` |
 | 10 | GIMP | Image editor |
 | 11 | Blender | 3D modeling |
@@ -451,7 +467,7 @@ bash ~/start-ubuntu-vnc.sh
 
 ### Working in the Desktop
 - **VSCode**: Panel icon or `code /path/to/project` in terminal
-- **Chromium**: Panel icon or `chromium-default` in terminal
+- **Chromium/Firefox**: Panel icon or `chromium` / `firefox` in terminal
 - **Chrome**: Panel icon or `google-chrome-stable` in terminal
 - **Terminal**: Panel icon or right-click desktop → Terminal
 - **File Manager**: Thunar panel icon or `thunar` in terminal
@@ -656,8 +672,8 @@ PROOT_BACKUP_DIR=~/my-backups bash ~/proot-backup.sh backup
 |---|---|
 | **VSCode crashes on launch** | Run `code --verbose --no-sandbox` to see errors. Usually missing libs: `apt install libnss3 libxss1 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2` |
 | **Keyring unlock popup** | Cancel it — `password-store=basic` is already configured |
-| **Chromium won't start** | Run `chromium-default` in terminal to see errors. Check wrapper: `head -10 /usr/bin/chromium`. Must have `--no-sandbox` |
-| **Chromium I/O error** | Check `/dev/shm` exists: `ls -la /dev/shm`. If missing: `mkdir -p /dev/shm && chmod 1777 /dev/shm` |
+| **Chromium won't start** | Run `chromium` in terminal to see errors. Check `ldd /usr/lib/chromium/chromium \| grep 'not found'` for missing libs. Check `/etc/chromium.d/proot-flags` exists. Run `bash /root/chromium-repair.sh` to reinstall |
+| **Browser is snap (won't launch)** | Ubuntu ships snap-stub browsers that are non-functional in proot. Run `bash /root/chromium-repair.sh` to remove snap and install Chromium v89 from Debian Buster. Or re-run `setup-proot.sh` which blocks snap automatically |
 | **Black screen in VNC** | Kill & restart: stop script + start script. Or manually: `vncserver -kill :1` then re-run |
 | **Icons missing in panel** | `apt install adwaita-icon-theme-full hicolor-icon-theme humanity-icon-theme && gtk-update-icon-cache /usr/share/icons/Adwaita` |
 | **Panel not showing correctly** | Delete `~/.config/xfce4/panel/` and `~/.config/xfce4/xfconf/xfce-perchannel-xml/xfce4-panel.xml`, then restart session |
@@ -708,7 +724,7 @@ chromium-default 2>&1 | head -50
 - **Code editors**: VSCode (with `--no-sandbox --password-store=basic`)
 - **Office**: LibreOffice (Writer, Calc, Impress, Draw, Base)
 - **Graphics**: GIMP, Blender (software rendering)
-- **Video**: Kdenlive, Shotcut
+- **Video**: Kdenlive, Shotcut, OBS Studio
 - **Email**: Thunderbird
 - **Music**: Spotify (official client on amd64, spotifyd + spotify-tui on arm64)
 - **Network**: nmap, traceroute, whois, dig, Angry IP Scanner

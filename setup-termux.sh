@@ -215,6 +215,16 @@ for candidate in "$SCRIPT_DIR/proot-backup.sh" "$HOME/proot-backup.sh"; do
     fi
 done
 
+# Also copy chromium-repair.sh into proot if present
+for candidate in "$SCRIPT_DIR/chromium-repair.sh" "$HOME/chromium-repair.sh"; do
+    if [[ -f "$candidate" ]]; then
+        cp "$candidate" "$UBUNTU_ROOT/root/chromium-repair.sh"
+        chmod +x "$UBUNTU_ROOT/root/chromium-repair.sh"
+        ok "chromium-repair.sh copied into Ubuntu proot at /root/chromium-repair.sh"
+        break
+    fi
+done
+
 # ══════════════════════════════════════════════════════════════════════
 #  5. Configure display resolution presets
 # ══════════════════════════════════════════════════════════════════════

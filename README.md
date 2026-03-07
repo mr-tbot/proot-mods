@@ -1,6 +1,6 @@
 # Proot Mods — Ubuntu Desktop on Android via Termux
 
-Run a full **XFCE desktop** with **VSCode**, **Chromium**, **Chrome**, development tools, media editors, network utilities, **Wine**, and **Google Drive sync** on Android — no root required.
+Run a full **XFCE desktop** with **VSCode**, **Chromium/Firefox** (user choice), **Chrome**, development tools, media editors, network utilities, **Wine**, and **Google Drive sync** on Android — no root required.
 
 Uses `proot-distro` to install Ubuntu, then applies sandbox/GPU/keyring mods that Electron, Chromium, and Wine need to function inside proot.
 
@@ -11,11 +11,11 @@ Uses `proot-distro` to install Ubuntu, then applies sandbox/GPU/keyring mods tha
 | **OS** | Ubuntu 22.04 LTS or latest (user choice) via `proot-distro` |
 | **Desktop** | XFCE4 — dark theme, Humanity icons, bottom dock panel, solid black wallpaper |
 | **Display** | TigerVNC (preferred) or Termux:X11 — interactive resolution presets |
-| **Browsers** | Chromium (newest from Debian repos) + Google Chrome — both with `--no-sandbox` wrappers |
+| **Browsers** | Chromium v89 and/or Firefox (user choice) + Google Chrome — all with proot wrappers/flags |
 | **Code Editor** | Visual Studio Code with `--no-sandbox`, `password-store=basic` |
 | **Office** | LibreOffice (Writer, Calc, Impress, Draw, Base) |
 | **Graphics** | GIMP, Blender (software rendering) |
-| **Video** | Kdenlive, Shotcut |
+| **Video** | Kdenlive, Shotcut, OBS Studio |
 | **Email** | Thunderbird |
 | **Music** | Spotify (official client on amd64, spotifyd + spotify-tui on arm64) |
 | **App Store** | GNOME Software (or GNOME PackageKit fallback) — graphical package manager |
@@ -27,7 +27,7 @@ Uses `proot-distro` to install Ubuntu, then applies sandbox/GPU/keyring mods tha
 | **Dev Tools** | Android SDK (full: cmdline-tools, sdkmanager, platform-tools, build-tools), ADB, Node.js, Arduino CLI + IDE, cmake, gdb, clang, make, tmux, jq, sqlite3, Java JDK, Ruby, Python 3 |
 | **Sound** | PulseAudio over TCP (plays through Android speakers) |
 | **USB** | OTG devices via bind-mounted `/dev/bus/usb` |
-| **Panel** | Applications | Settings | Terminal | Thunar | Chrome | Thunderbird | VSCode | Chromium | LibreOffice | GIMP | Blender | Spotify | Tasklist | Volume | Clock (LCD) |
+| **Panel** | Applications | Settings | Terminal | Thunar | Chromium/Firefox | Chrome | Thunderbird | VSCode | LibreOffice | GIMP | Blender | Spotify | Tasklist | Volume | Clock (LCD) |
 | **Architecture** | arm64 primary, amd64/armhf fallback |
 
 ## Quick Start
@@ -69,6 +69,7 @@ proot-mods/
 ├── setup-proot.sh       # Step 2: Run inside proot — installs desktop + all apps + mods
 ├── gdrive-mount.sh      # Step 3 (optional): Run inside proot — Google Drive rclone sync
 ├── proot-backup.sh      # Backup/restore the entire Ubuntu environment
+├── chromium-repair.sh   # Fix: reinstall Chromium v89 / Firefox / both (user choice)
 ├── instructions.md      # Full documentation (architecture, troubleshooting, etc.)
 └── README.md            # This file
 ```
@@ -83,10 +84,10 @@ Runs in Termux. Installs `proot-distro`, downloads Ubuntu (version choice + re-u
 ### setup-proot.sh
 Runs inside Ubuntu proot. Installs and configures:
 - XFCE4 desktop + TigerVNC with bottom dock panel
-- Chromium (newest from Debian Bookworm → Bullseye → Buster fallback, with user choice)
+- Browser choice: Chromium v89 (Debian Buster .deb + 14 compat libraries + proot flags via `/etc/chromium.d/`) and/or Firefox (Mozilla APT + proot wrapper)
 - Google Chrome with proot wrapper
 - VSCode with proot wrapper (`--no-sandbox`, `--password-store=basic`)
-- Blender, GIMP, LibreOffice, GParted, Kdenlive, Shotcut, Thunderbird, Spotify
+- Blender, GIMP, LibreOffice, GParted, Kdenlive, Shotcut, OBS Studio, Thunderbird, Spotify
 - App Store (GNOME Software), WireGuard VPN, Conky desktop system monitor
 - Full Android SDK (cmdline-tools, sdkmanager, platform-tools, build-tools, platforms)
 - Arduino IDE + Arduino CLI
@@ -185,7 +186,7 @@ Files sync to `~/GoogleDrive` inside the proot. Use `gdrive-pull Documents` or `
 See [instructions.md](instructions.md) Section 11 for detailed troubleshooting, including:
 - VNC black screen fixes
 - VSCode crash resolution
-- Chromium launch failures
+- Chromium/browser launch failures
 - apt/dpkg lock issues
 - Storage permission problems
 - Wine/Notepad++ issues
