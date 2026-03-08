@@ -337,6 +337,14 @@ APTNOSNAP
 ok "snapd + snap-chromium blocked permanently."
 
 # Clean up old repo configs from prior attempts
+# IMPORTANT: If a previous run added the Debian Buster repo, its packages
+# contaminate apt's package database and cause dependency conflicts during
+# ALL subsequent installs (blender, gimp, libreoffice, vscode, etc.).
+# We must remove the repo AND refresh apt's cache.
+_had_buster_repo=0
+[[ -f /etc/apt/sources.list.d/debian-chromium.list ]] && _had_buster_repo=1
+[[ -f /etc/apt/sources.list.d/debian-chromium.sources ]] && _had_buster_repo=1
+
 rm -f /etc/apt/sources.list.d/debian-chromium.list 2>/dev/null || true
 rm -f /etc/apt/sources.list.d/debian-chromium.sources 2>/dev/null || true
 rm -f /etc/apt/sources.list.d/mozilla-firefox.list 2>/dev/null || true
@@ -345,6 +353,14 @@ rm -f /etc/apt/preferences.d/mozilla-firefox.pref 2>/dev/null || true
 rm -f /usr/share/keyrings/debian-archive-all.gpg 2>/dev/null || true
 rm -f /usr/share/keyrings/packages.mozilla.org.gpg 2>/dev/null || true
 rm -f /etc/apt/trusted.gpg.d/debian*.gpg 2>/dev/null || true
+
+# If Debian Buster repo was present from a prior run, refresh apt cache
+# to prevent old Buster packages from contaminating Ubuntu installs
+if [[ "$_had_buster_repo" -eq 1 ]]; then
+    msg "Cleaning stale Debian Buster packages from apt cache..."
+    apt-get update -qq 2>/dev/null || true
+    ok "Apt cache refreshed (Buster contamination removed)."
+fi
 
 # Fix broken dpkg state
 dpkg --configure -a 2>/dev/null || true
@@ -355,27 +371,11 @@ if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
 
 msg "Installing Chromium v89 (Debian Buster .deb)..."
 
-# ── Add Debian Buster archive repo ───────────────────────────────────
-msg "Adding Debian Buster archive repo..."
-
-cat > /etc/apt/sources.list.d/debian-chromium.sources <<'DEBSRC'
-Types: deb
-URIs: http://archive.debian.org/debian/
-Suites: buster
-Components: main
-Signed-By:
-Trusted: yes
-
-Types: deb
-URIs: http://archive.debian.org/debian/
-Suites: buster-updates
-Components: main
-Signed-By:
-Trusted: yes
-DEBSRC
-ok "Debian Buster archive repo added (DEB822 format, Trusted: yes)."
-
-apt-get update -qq 2>&1 | tail -3
+# NOTE: Chromium v89 .debs are downloaded directly from archive.debian.org
+# via wget. We intentionally do NOT add a Debian Buster apt repo because
+# it would contaminate apt's package database and cause dependency
+# conflicts with Ubuntu packages for ALL subsequent installs
+# (blender, gimp, libreoffice, vscode, chrome, dev tools, etc.).
 
 # ── Step 3: Download Chromium v89 + compat libs from Debian Buster ────
 CHROMIUM_INSTALLED=0
@@ -426,7 +426,20 @@ if [[ "$CHROMIUM_INSTALLED" -eq 0 ]]; then
     wget -q "${_BASE}/x/x264/libx264-155_0.155.2917+git0a84d98-2_${DEB_ARCH}.deb"              -O "$_DEB_DIR/libx264-155.deb"
     wget -q "${_BASE}/x/x265/libx265-165_2.9-4_${DEB_ARCH}.deb"                                -O "$_DEB_DIR/libx265-165.deb"
     wget -q "${_BASE}/libs/libssh/libssh-gcrypt-4_0.8.7-1+deb10u1_${DEB_ARCH}.deb"             -O "$_DEB_DIR/libssh-gcrypt-4.deb"
-    ok "All .deb files downloaded."
+
+    # Verify all downloads succeeded (wget -q hides errors silently)
+    _DOWNLOAD_OK=1
+    for _f in "$_DEB_DIR"/*.deb; do
+        if [[ ! -s "$_f" ]]; then
+            err "Download failed or empty: $(basename "$_f")"
+            _DOWNLOAD_OK=0
+        fi
+    done
+    if [[ "$_DOWNLOAD_OK" -eq 1 ]]; then
+        ok "All .deb files downloaded ($(ls "$_DEB_DIR"/*.deb 2>/dev/null | wc -l) files)."
+    else
+        err "Some .deb downloads failed — check network. Chromium may not install correctly."
+    fi
 
     # ── Step 4: Install compat libraries ──────────────────────────────
     msg "Installing Buster compat libraries..."
@@ -567,6 +580,10 @@ CHROMDESK
     ok "Chromium .desktop file written."
     fi  # end CHROMIUM_INSTALLED
 fi  # end INSTALL_CHROMIUM
+
+# Safety: ensure Debian Buster repo is never left behind
+# (prevents contaminating apt for Chrome, VSCode, apps, dev tools, etc.)
+rm -f /etc/apt/sources.list.d/debian-chromium.sources /etc/apt/sources.list.d/debian-chromium.list 2>/dev/null || true
 
 
 # ── Firefox Install (Mozilla APT) ─────────────────────────────────────

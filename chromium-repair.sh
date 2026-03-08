@@ -169,33 +169,17 @@ apt-get clean 2>/dev/null || true
 if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
 
 # ══════════════════════════════════════════════════════════════════════
-#  PHASE 3: Add Debian Buster archive repo
+#  PHASE 3: Prepare for Chromium download
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 3: Adding Debian Buster archive repo...${NC}\n\n"
+printf "\n${BOLD}Phase 3: Preparing Chromium v89 download...${NC}\n\n"
 
-# Remove any existing Debian Buster sources to start clean
-rm -f /etc/apt/sources.list.d/debian-chromium.sources 2>/dev/null || true
-
-cat > /etc/apt/sources.list.d/debian-chromium.sources <<'DEBSRC'
-Types: deb
-URIs: http://archive.debian.org/debian/
-Suites: buster
-Components: main
-Signed-By:
-Trusted: yes
-
-Types: deb
-URIs: http://archive.debian.org/debian/
-Suites: buster-updates
-Components: main
-Signed-By:
-Trusted: yes
-DEBSRC
-ok "Debian Buster archive repo added (DEB822 format, Trusted: yes)"
-
-msg "Updating apt..."
-apt-get update 2>&1 | tail -5
-ok "apt updated"
+# NOTE: We download .debs directly from archive.debian.org via wget.
+# No Debian Buster apt repo is added — doing so would contaminate apt's
+# package database with thousands of old Buster packages and cause
+# dependency conflicts with Ubuntu packages.
+# Clean up any leftover Buster repo from previous runs.
+rm -f /etc/apt/sources.list.d/debian-chromium.sources /etc/apt/sources.list.d/debian-chromium.list 2>/dev/null || true
+ok "Buster repo cleanup complete"
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -233,7 +217,19 @@ wget -q "${_BASE}/x/x264/libx264-155_0.155.2917+git0a84d98-2_${DEB_ARCH}.deb"   
 wget -q "${_BASE}/x/x265/libx265-165_2.9-4_${DEB_ARCH}.deb"                                -O "$_DEB_DIR/libx265-165.deb"       && ok "libx265-165"
 wget -q "${_BASE}/libs/libssh/libssh-gcrypt-4_0.8.7-1+deb10u1_${DEB_ARCH}.deb"             -O "$_DEB_DIR/libssh-gcrypt-4.deb"   && ok "libssh-gcrypt-4"
 
-ok "All .deb files downloaded"
+# Verify all downloads (wget -q hides failures silently)
+_DOWNLOAD_OK=1
+for _f in "$_DEB_DIR"/*.deb; do
+    if [[ ! -s "$_f" ]]; then
+        err "Download failed or empty: $(basename "$_f")"
+        _DOWNLOAD_OK=0
+    fi
+done
+if [[ "$_DOWNLOAD_OK" -eq 1 ]]; then
+    ok "All .deb files downloaded ($(ls "$_DEB_DIR"/*.deb 2>/dev/null | wc -l) files)"
+else
+    die "Some .deb downloads failed — check network and retry."
+fi
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -392,6 +388,9 @@ rm -rf "$_DEB_DIR"
 
 fi  # end INSTALL_CHROMIUM
 
+# Safety: ensure Debian Buster repo is never left behind
+rm -f /etc/apt/sources.list.d/debian-chromium.sources /etc/apt/sources.list.d/debian-chromium.list 2>/dev/null || true
+
 
 # ── Firefox Repair (Mozilla APT) ─────────────────────────────────────
 if [[ "$INSTALL_FIREFOX" -eq 1 ]]; then
@@ -507,9 +506,9 @@ PASS=0; FAIL=0
 _verify() {
     local label="$1" cmd="$2"
     if eval "$cmd" >/dev/null 2>&1; then
-        ok "$label"; ((PASS++))
+        ok "$label"; PASS=$((PASS + 1))
     else
-        err "$label"; ((FAIL++))
+        err "$label"; FAIL=$((FAIL + 1))
     fi
 }
 
@@ -527,7 +526,7 @@ _verify "proot-flags config exists"    "test -f /etc/chromium.d/proot-flags"
 _verify "proot-flags has --no-sandbox" "grep -q 'no-sandbox' /etc/chromium.d/proot-flags"
 _verify "chromium .desktop exists"     "test -f /usr/share/applications/chromium.desktop"
 _verify "chromium packages held"       "apt-mark showhold 2>/dev/null | grep -q chromium"
-_verify "Buster repo configured"       "test -f /etc/apt/sources.list.d/debian-chromium.sources"
+_verify "Buster repo removed"          "test ! -f /etc/apt/sources.list.d/debian-chromium.sources"
 fi
 
 if [[ "$INSTALL_FIREFOX" -eq 1 ]]; then
