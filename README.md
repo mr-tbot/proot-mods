@@ -1,4 +1,4 @@
-# Proot Mods — Ubuntu Desktop on Android via Termux
+# Proot Dev Mods — Ubuntu Desktop on Android via Termux
 
 Run a full **XFCE desktop** with **VSCode**, **Chromium/Firefox** (user choice), **Chrome**, development tools, media editors, network utilities, **Wine**, and **Google Drive sync** on Android — no root required.
 
@@ -32,31 +32,68 @@ Uses `proot-distro` to install Ubuntu, then applies sandbox/GPU/keyring mods tha
 
 ## Quick Start
 
+### 1. Install F-Droid and Termux
+
+**First, install F-Droid** (open-source app store):
+1. Go to **https://f-droid.org** on your Android browser
+2. Download and install the F-Droid APK
+3. Android may warn about "unknown sources" — allow it (this is expected for apps outside the Play Store)
+4. You may need to disable **Google Play Protect** temporarily if it blocks the install
+
+**Then install Termux from F-Droid** — **NOT** the Play Store version (it's outdated and will not work). The Termux developer officially recommends the F-Droid build.
+
+Also install **Termux:API** from F-Droid and a VNC viewer — **RealVNC Viewer** (Play Store) is recommended.
+
+> **Android 12+ users**: You must disable the Phantom Process Killer or Termux will be killed randomly. See [instructions.md](instructions.md) Section 3 for the full fix.
+
+### 2. Clone the repo
+
 ```bash
-# 1. Clone / copy this folder into Termux
-# 2. Run the Termux-side setup
+pkg update && pkg upgrade -y
+pkg install git -y
+git clone https://github.com/user/proot-dev-mods.git
+```
+
+### 3. Run the Termux setup
+
+```bash
+cd proot-dev-mods
+chmod +x setup-termux.sh
 bash setup-termux.sh
+```
 
-# 3. It will automatically:
-#    - Install proot-distro + Ubuntu (choice of version)
-#    - Copy setup-proot.sh + gdrive-mount.sh into the proot
-#    - Create launcher scripts in ~/
+Follow the on-screen instructions — the script will:
+- Install `proot-distro`, TigerVNC, PulseAudio, Termux:X11 support
+- Download and install Ubuntu (you choose the version)
+- Copy all scripts into the proot environment
+- Let you configure resolution presets for your device(s)
+- Create launcher scripts in your Termux home (`~/`)
 
-# 4. Enter the proot and run desktop setup
+### 4. Set up the desktop inside Ubuntu
+
+```bash
 proot-distro login ubuntu-oldlts    # (or your chosen alias)
 bash /root/setup-proot.sh           # Installs ~30 apps + desktop customization
+```
 
-# 5. (Optional) Set up Google Drive
-bash /root/gdrive-mount.sh          # Interactive rclone setup
+This takes 15–30 minutes depending on internet speed. Follow the prompts (browser choice, etc.).
 
-# 6. Exit proot and start the desktop
+### 5. Exit proot and start the desktop
+
+```bash
 exit
-bash ~/start-ubuntu-vnc.sh          # VNC → connect RealVNC to localhost:5901
-# or
-bash ~/start-ubuntu-x11.sh          # Termux:X11 app
+bash ~/start-ubuntu-vnc.sh          # Starts VNC in the background
+```
 
-# 7. Stop
-bash ~/stop-ubuntu.sh
+Open **RealVNC Viewer** → New Connection → `localhost:5901`
+
+The VNC server runs **in the background** — your Termux shell stays usable. Use `bash ~/stop-ubuntu.sh` when you're done.
+
+### 6. (Optional) Set up Google Drive
+
+```bash
+proot-distro login ubuntu-oldlts
+bash /root/gdrive-mount.sh          # Interactive rclone setup
 ```
 
 All scripts are **idempotent** — safe to re-run. They detect existing installs and skip what's already present.
@@ -64,61 +101,94 @@ All scripts are **idempotent** — safe to re-run. They detect existing installs
 ## File Structure
 
 ```
-proot-mods/
-├── setup-termux.sh      # Step 1: Run in Termux — installs Ubuntu, creates launchers
-├── setup-proot.sh       # Step 2: Run inside proot — installs desktop + all apps + mods
-├── gdrive-mount.sh      # Step 3 (optional): Run inside proot — Google Drive rclone sync
-├── proot-backup.sh      # Backup/restore the entire Ubuntu environment
-├── chromium-repair.sh   # Fix: reinstall Chromium v89 / Firefox / both (user choice)
-├── instructions.md      # Full documentation (architecture, troubleshooting, etc.)
-└── README.md            # This file
+proot-dev-mods/
+├── setup-termux.sh       # Step 1: Run in Termux — installs Ubuntu, creates launchers
+├── setup-proot.sh        # Step 2: Run inside proot — installs desktop + all apps + mods
+├── gdrive-mount.sh       # Step 3 (optional): Run inside proot — Google Drive rclone sync
+├── proot-backup.sh       # Backup/restore the entire Ubuntu environment
+├── chromium-repair.sh    # Fix: reinstall Chromium v89 / Firefox / both (user choice)
+├── vscode-repair.sh      # Fix: restore VSCode proot wrapper + configs after updates
+├── instructions.md       # Full documentation (architecture, troubleshooting, etc.)
+└── README.md             # This file
 ```
 
-### setup-termux.sh
-Runs in Termux. Installs `proot-distro`, downloads Ubuntu (version choice + re-use detection), copies scripts in, and creates convenience launcher scripts:
-- `~/start-ubuntu-vnc.sh` — Start VNC server (resolution presets, PulseAudio, exit trap)
-- `~/start-ubuntu-x11.sh` — Start via Termux:X11
-- `~/stop-ubuntu.sh` — Kill VNC / X11 / PulseAudio, release wake-lock
-- `~/login-ubuntu.sh` — Shell-only login (no desktop)
+### Launcher scripts (created by setup-termux.sh)
+
+| Script | Purpose |
+|---|---|
+| `~/start-ubuntu-vnc.sh` | Start VNC desktop in the **background** — choose resolution, PulseAudio, USB passthrough |
+| `~/start-ubuntu-x11.sh` | Start desktop via Termux:X11 in the **background** |
+| `~/stop-ubuntu.sh` | Stop everything — VNC, X11, PulseAudio, proot sessions, wake-lock |
+| `~/login-ubuntu.sh` | Shell-only proot login (no desktop) |
+
+### Repair scripts (inside proot at /root/)
+
+| Script | Purpose |
+|---|---|
+| `/root/chromium-repair.sh` | Reinstall Chromium v89 from Debian Buster with proot wrapper chain. Run after browser issues or snap contamination. |
+| `/root/vscode-repair.sh` | Restore VSCode proot wrapper, `argv.json`, `settings.json`, and `.desktop` patches. Run after any VSCode update. |
 
 ### setup-proot.sh
 Runs inside Ubuntu proot. Installs and configures:
 - XFCE4 desktop + TigerVNC with bottom dock panel
-- Browser choice: Chromium v89 (Debian Buster .deb + 14 compat libraries + proot flags via `/etc/chromium.d/`) and/or Firefox (Mozilla APT + proot wrapper)
+- Browser choice: Chromium v89 (Debian Buster .deb + 14 compat libraries + 4-layer proot wrapper chain) and/or Firefox (Mozilla APT + proot wrapper)
 - Google Chrome with proot wrapper
 - VSCode with proot wrapper (`--no-sandbox`, `--password-store=basic`)
 - Blender, GIMP, LibreOffice, GParted, Kdenlive, Shotcut, OBS Studio, Thunderbird, Spotify
 - App Store (GNOME Software), WireGuard VPN, Conky desktop system monitor
 - Full Android SDK (cmdline-tools, sdkmanager, platform-tools, build-tools, platforms)
 - Arduino IDE + Arduino CLI
-- Dev tools: ADB, Node.js, Arduino CLI, cmake, gdb, clang, make, tmux, jq, sqlite3, Java, Ruby
+- Dev tools: ADB, Node.js, cmake, gdb, clang, make, tmux, jq, sqlite3, Java, Ruby
 - Network tools: nmap, traceroute, whois, dnsutils, Angry IP Scanner
 - Wine (+ box64 on arm64) with Notepad++
 - Environment variables (`ELECTRON_DISABLE_SANDBOX`, `LIBGL_ALWAYS_SOFTWARE`, etc.)
 - Desktop customization (dark theme, Humanity icons, all app launchers in panel, LCD clock, DPMS off, Conky widgets)
 
-### gdrive-mount.sh
-Runs inside Ubuntu proot. Sets up Google Drive sync via rclone:
-- Installs rclone, walks through Google Drive OAuth
-- Creates sync commands: `gdrive-pull`, `gdrive-push`, `gdrive-copy`, `gdrive-bisync`, `gdrive-status`
-- Adds Thunar bookmark and desktop shortcut
-- Optional auto-pull on login
+## Daily Usage
 
-> FUSE mount is not available in proot — uses rclone sync/copy instead.
+### Starting
 
-### proot-backup.sh
-Run in Termux (not inside proot):
 ```bash
-bash proot-backup.sh backup          # Full backup → ~/storage/shared/proot-backups/
-bash proot-backup.sh backup --quick  # Skip caches/tmp
-bash proot-backup.sh restore <file>  # Restore from archive
-bash proot-backup.sh list            # List available backups
-bash proot-backup.sh info <file>     # Show backup metadata
+bash ~/start-ubuntu-vnc.sh       # Start VNC (background) → connect to localhost:5901
+# or
+bash ~/start-ubuntu-x11.sh       # Start X11 (background) → switch to Termux:X11 app
+```
+
+Both launchers run in the **background** and return you to the Termux shell immediately. You can continue using the terminal while the desktop runs.
+
+### Stopping
+
+```bash
+bash ~/stop-ubuntu.sh            # Stops VNC/X11/PulseAudio, kills proot sessions, releases wake-lock
+```
+
+### Shell-only access (no desktop)
+
+```bash
+bash ~/login-ubuntu.sh
+# or:
+proot-distro login ubuntu-oldlts
+```
+
+### After a VSCode update
+
+VSCode updates regularly and overwrites the proot wrapper and `.desktop` files. Run the repair script inside proot:
+
+```bash
+bash /root/vscode-repair.sh
+```
+
+### After browser issues
+
+If Chromium won't launch or snap stubs contaminate the install:
+
+```bash
+bash /root/chromium-repair.sh
 ```
 
 ## Sound
 
-PulseAudio runs in Termux and streams audio to Android speakers over TCP. Both VNC and X11 methods use the same approach.
+PulseAudio runs in Termux and streams audio to Android speakers over TCP. Works with both VNC and X11.
 
 - Volume control widget is in the XFCE panel
 - Run `pavucontrol` for advanced mixing
@@ -151,7 +221,16 @@ gdrive-bisync            # Two-way bidirectional sync
 gdrive-status            # Show connection info + usage
 ```
 
-Files sync to `~/GoogleDrive` inside the proot. Use `gdrive-pull Documents` or `gdrive-push Projects` to sync specific subfolders.
+## Backup & Restore
+
+```bash
+# In Termux:
+bash ~/proot-backup.sh backup          # Full backup → ~/storage/shared/proot-backups/
+bash ~/proot-backup.sh backup --quick  # Skip caches/tmp
+bash ~/proot-backup.sh restore <file>  # Restore from archive
+bash ~/proot-backup.sh list            # List available backups
+bash ~/proot-backup.sh info <file>     # Show backup metadata
+```
 
 ## Display Options
 
@@ -183,7 +262,7 @@ Files sync to `~/GoogleDrive` inside the proot. Use `gdrive-pull Documents` or `
 
 ## Troubleshooting
 
-See [instructions.md](instructions.md) Section 11 for detailed troubleshooting, including:
+See [instructions.md](instructions.md) Section 12 for detailed troubleshooting, including:
 - VNC black screen fixes
 - VSCode crash resolution
 - Chromium/browser launch failures
@@ -191,7 +270,7 @@ See [instructions.md](instructions.md) Section 11 for detailed troubleshooting, 
 - Storage permission problems
 - Wine/Notepad++ issues
 - Google Drive auth problems
-- Error 9 (Termux killed by Android)
+- Error 9 / Signal 9 (Phantom Process Killer — see Section 3 of instructions.md)
 
 ## License
 

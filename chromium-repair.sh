@@ -74,28 +74,17 @@ fi
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PHASE 1: Nuclear cleanup — remove ALL snap traces
+#  PHASE 1: Cleanup — snap browser stubs + old browser remnants
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 1: Nuclear cleanup — snap + old browser remnants...${NC}\n\n"
+printf "\n${BOLD}Phase 1: Cleanup — snap browser stubs + old browser remnants...${NC}\n\n"
 
-# Remove all snaps
+# Remove snap-installed browsers (snap stubs that don't work in proot)
 if command -v snap >/dev/null 2>&1; then
-    msg "Removing all installed snaps..."
+    msg "Removing snap browser packages..."
     snap remove --purge firefox 2>/dev/null || true
     snap remove --purge chromium 2>/dev/null || true
-    for _snap in $(snap list 2>/dev/null | awk 'NR>1{print $1}' | grep -v "^core" | grep -v "^snapd"); do
-        snap remove --purge "$_snap" 2>/dev/null || true
-    done
-    for _snap in $(snap list 2>/dev/null | awk 'NR>1{print $1}'); do
-        snap remove --purge "$_snap" 2>/dev/null || true
-    done
-    ok "All snaps removed"
+    ok "Snap browser packages removed"
 fi
-
-# Purge snapd
-msg "Purging snapd..."
-apt-get purge -y snapd squashfuse snap-confine ubuntu-core-launcher 2>/dev/null || true
-ok "snapd purged"
 
 # Remove snap stubs for chromium + firefox
 msg "Removing snap stubs..."
@@ -107,17 +96,13 @@ for _bin in /usr/bin/chromium-browser /usr/bin/chromium /usr/bin/firefox; do
         rm -f "$_bin"
     fi
 done
-ok "Snap stubs removed"
+ok "Snap browser stubs removed"
 
 # Remove any existing Chromium (to do a clean reinstall)
 msg "Removing existing Chromium packages..."
 apt-mark unhold chromium chromium-common 2>/dev/null || true
 dpkg --purge --force-depends chromium chromium-common 2>/dev/null || true
 ok "Old Chromium removed"
-
-# Remove snap directories
-rm -rf /snap /var/snap /var/lib/snapd /var/cache/snapd \
-       ~/snap /root/snap /tmp/snap* 2>/dev/null || true
 
 # Clean up old repo configs
 rm -f /etc/apt/sources.list.d/debian-chromium.list 2>/dev/null || true
@@ -129,19 +114,13 @@ rm -f /usr/share/keyrings/packages.mozilla.org.gpg 2>/dev/null || true
 rm -f /etc/apt/trusted.gpg.d/debian*.gpg 2>/dev/null || true
 
 apt-get autoremove -y 2>/dev/null || true
-ok "All snap directories and old configs cleaned"
+ok "All old configs cleaned"
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PHASE 2: Block snapd + snap-stub chromium permanently
+#  PHASE 2: Block snap-stub chromium packages permanently
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 2: Blocking snapd + snap-stub chromium permanently...${NC}\n\n"
-
-cat > /etc/apt/preferences.d/no-snapd.pref <<'NOSNAP'
-Package: snapd
-Pin: release *
-Pin-Priority: -10
-NOSNAP
+printf "\n${BOLD}Phase 2: Blocking snap-stub chromium packages permanently...${NC}\n\n"
 
 cat > /etc/apt/preferences.d/no-snap-chromium.pref <<'NOSNAPCHROM'
 Package: chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra
@@ -153,12 +132,7 @@ Pin: release *
 Pin-Priority: -10
 NOSNAPCHROM
 
-apt-mark hold snapd 2>/dev/null || true
-
-cat > /etc/apt/apt.conf.d/99no-snap <<'APTNOSNAP'
-DPkg::Post-Invoke {"if [ -x /usr/bin/snap ]; then rm -f /usr/bin/snap; fi";};
-APTNOSNAP
-ok "snapd + snap-chromium blocked permanently"
+ok "Snap-stub chromium packages blocked permanently"
 
 # Fix broken dpkg state
 dpkg --configure -a 2>/dev/null || true
@@ -274,7 +248,8 @@ ok "Chromium v89 installed: $(dpkg -s chromium 2>/dev/null | grep ^Version | hea
 printf "\n${BOLD}Phase 7: Fixing gdk-pixbuf symlink...${NC}\n\n"
 
 _LIBDIR="/usr/lib/aarch64-linux-gnu"
-[[ "$DEB_ARCH" == "amd64" ]] && _LIBDIR="/usr/lib/x86_64-linux-gnu"
+[[ "$DEB_ARCH" == "amd64" ]]  && _LIBDIR="/usr/lib/x86_64-linux-gnu"
+[[ "$DEB_ARCH" == "armhf" ]]  && _LIBDIR="/usr/lib/arm-linux-gnueabihf"
 _GDK_REAL="$(ls "${_LIBDIR}"/libgdk_pixbuf-2.0.so.0.* 2>/dev/null | head -1)"
 if [[ -n "$_GDK_REAL" ]]; then
     ln -sf "$_GDK_REAL" "${_LIBDIR}/libgdk_pixbuf-2.0.so.0"
@@ -344,9 +319,84 @@ ok "Proot flags written to /etc/chromium.d/proot-flags"
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PHASE 10: Ensure runtime directories + hold packages
+#  PHASE 10: Create proot wrapper (proven ubchromiumfix.sh launch chain)
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 10: Runtime dirs + package hold...${NC}\n\n"
+printf "\n${BOLD}Phase 10: Creating proot wrapper...${NC}\n\n"
+
+# The stock Debian launcher (/usr/bin/chromium) sources /etc/chromium.d/*
+# and then exec's the ELF binary.  We rename it to chromium.real and
+# create a wrapper that injects critical proot flags BEFORE it runs.
+
+# Preserve the stock Debian launcher as chromium.real
+if [[ -f /usr/bin/chromium ]] && [[ ! -f /usr/bin/chromium.real ]]; then
+    mv /usr/bin/chromium /usr/bin/chromium.real
+    chmod +x /usr/bin/chromium.real
+    ok "Stock launcher preserved as /usr/bin/chromium.real"
+elif [[ -f /usr/bin/chromium ]] && [[ -f /usr/bin/chromium.real ]]; then
+    if ! head -3 /usr/bin/chromium 2>/dev/null | grep -q "proot chromium wrapper"; then
+        mv /usr/bin/chromium /usr/bin/chromium.real
+        chmod +x /usr/bin/chromium.real
+        ok "Stock launcher re-preserved as /usr/bin/chromium.real"
+    fi
+fi
+
+# Create the proot wrapper at /usr/bin/chromium
+cat > /usr/bin/chromium <<'CHROMWRAP'
+#!/bin/sh
+# proot chromium wrapper: force flags so XFCE/exo-open can launch as root
+# reliably and prevent Gmail/Google login crashes (WebAuthn/FIDO + keychain).
+exec /usr/bin/chromium.real \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-gpu \
+  --disable-software-rasterizer \
+  --no-zygote \
+  --password-store=basic \
+  --use-mock-keychain \
+  --disable-features=WebAuthentication,WebAuthn,SecurePaymentConfirmation \
+  "$@"
+CHROMWRAP
+chmod +x /usr/bin/chromium
+ok "Proot wrapper created at /usr/bin/chromium → calls chromium.real"
+
+# Create debug/XFCE helper wrapper at /usr/local/bin/chromium-default
+mkdir -p /usr/local/bin
+cat > /usr/local/bin/chromium-default <<'CHROMDEFAULT'
+#!/bin/sh
+exec >>/tmp/chromium-default.log 2>&1
+echo "----- $(date) -----"
+echo "UID=$(id -u) USER=$USER"
+echo "ARGS: $*"
+echo "DISPLAY=$DISPLAY"
+echo "XAUTHORITY=$XAUTHORITY"
+echo "XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR"
+echo "DBUS_SESSION_BUS_ADDRESS=$DBUS_SESSION_BUS_ADDRESS"
+echo "PATH=$PATH"
+echo "PWD=$(pwd)"
+echo "which chromium: $(command -v chromium)"
+ls -l /usr/bin/chromium
+
+# Make runtime dir exist (Chromium and some desktop bits expect it)
+export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-root}"
+mkdir -p "$XDG_RUNTIME_DIR"
+chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
+
+exec /usr/bin/chromium \
+  --no-sandbox \
+  --disable-dev-shm-usage \
+  --disable-gpu \
+  --disable-software-rasterizer \
+  --no-zygote \
+  "$@"
+CHROMDEFAULT
+chmod +x /usr/local/bin/chromium-default
+ok "Debug wrapper created at /usr/local/bin/chromium-default"
+
+
+# ══════════════════════════════════════════════════════════════════════
+#  PHASE 11: Ensure runtime directories + hold packages
+# ══════════════════════════════════════════════════════════════════════
+printf "\n${BOLD}Phase 11: Runtime dirs + package hold...${NC}\n\n"
 
 mkdir -p /dev/shm && chmod 1777 /dev/shm
 mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
@@ -362,7 +412,7 @@ Type=Application
 Name=Chromium Web Browser
 Comment=Access the Internet
 GenericName=Web Browser
-Exec=/usr/bin/chromium %U
+Exec=/usr/bin/chromium --no-sandbox --disable-dev-shm-usage %U
 Icon=chromium
 Terminal=false
 Categories=Network;WebBrowser;
@@ -373,11 +423,11 @@ Actions=new-window;new-private-window;
 
 [Desktop Action new-window]
 Name=New Window
-Exec=/usr/bin/chromium --new-window
+Exec=/usr/bin/chromium --no-sandbox --disable-dev-shm-usage --new-window
 
 [Desktop Action new-private-window]
 Name=New Private Window
-Exec=/usr/bin/chromium --incognito
+Exec=/usr/bin/chromium --no-sandbox --disable-dev-shm-usage --incognito
 CHROMDESK
 ok "Chromium .desktop file written"
 
@@ -512,10 +562,7 @@ _verify() {
     fi
 }
 
-_verify "snapd NOT installed"          "! command -v snap && ! dpkg -s snapd 2>/dev/null | grep -q 'Status: install ok'"
-_verify "snapd blocked by APT"         "test -f /etc/apt/preferences.d/no-snapd.pref"
-_verify "snap-chromium blocked"        "test -f /etc/apt/preferences.d/no-snap-chromium.pref"
-_verify "/snap/ directory gone"        "test ! -d /snap"
+_verify "snap stubs blocked"           "test -f /etc/apt/preferences.d/no-snap-chromium.pref"
 _verify "/dev/shm exists"             "test -d /dev/shm"
 
 if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
@@ -524,6 +571,9 @@ _verify "chromium NOT snap stub"       "! head -20 /usr/bin/chromium 2>/dev/null
 _verify "chromium no missing libs"     "test -z \"\$(ldd /usr/lib/chromium/chromium 2>&1 | grep 'not found')\""
 _verify "proot-flags config exists"    "test -f /etc/chromium.d/proot-flags"
 _verify "proot-flags has --no-sandbox" "grep -q 'no-sandbox' /etc/chromium.d/proot-flags"
+_verify "chromium wrapper active"      "head -3 /usr/bin/chromium 2>/dev/null | grep -q 'proot chromium wrapper'"
+_verify "chromium.real exists"         "test -f /usr/bin/chromium.real"
+_verify "chromium-default exists"      "test -f /usr/local/bin/chromium-default"
 _verify "chromium .desktop exists"     "test -f /usr/share/applications/chromium.desktop"
 _verify "chromium packages held"       "apt-mark showhold 2>/dev/null | grep -q chromium"
 _verify "Buster repo removed"          "test ! -f /etc/apt/sources.list.d/debian-chromium.sources"

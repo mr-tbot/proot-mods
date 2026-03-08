@@ -225,6 +225,16 @@ for candidate in "$SCRIPT_DIR/chromium-repair.sh" "$HOME/chromium-repair.sh"; do
     fi
 done
 
+# Also copy vscode-repair.sh into proot if present
+for candidate in "$SCRIPT_DIR/vscode-repair.sh" "$HOME/vscode-repair.sh"; do
+    if [[ -f "$candidate" ]]; then
+        cp "$candidate" "$UBUNTU_ROOT/root/vscode-repair.sh"
+        chmod +x "$UBUNTU_ROOT/root/vscode-repair.sh"
+        ok "vscode-repair.sh copied into Ubuntu proot at /root/vscode-repair.sh"
+        break
+    fi
+done
+
 # ══════════════════════════════════════════════════════════════════════
 #  5. Configure display resolution presets
 # ══════════════════════════════════════════════════════════════════════
@@ -432,23 +442,7 @@ pulseaudio --start \
     --load="module-native-protocol-tcp auth-ip-acl=127.0.0.1 auth-anonymous=1" \
     --exit-idle-time=-1 2>/dev/null || true
 
-# Clean exit handler
-cleanup() {
-    echo ""
-    echo "  Stopping VNC session..."
-    proot-distro login ubuntu --shared-tmp -- bash -c "
-        vncserver -kill :${DISPLAY_NUM} 2>/dev/null || true
-        pkill -f Xvnc 2>/dev/null || true
-        rm -rf /tmp/.X*-lock /tmp/.X11-unix/X* 2>/dev/null || true
-        rm -f \$HOME/.vnc/*.pid 2>/dev/null || true
-    " 2>/dev/null || true
-    pulseaudio --kill 2>/dev/null || true
-    command -v termux-wake-unlock &>/dev/null && termux-wake-unlock
-    echo "  ✔ Cleaned up."
-}
-trap cleanup EXIT INT TERM
-
-# Launch proot-distro with Ubuntu and start VNC inside it
+# Launch proot-distro with Ubuntu and start VNC inside it (backgrounded)
 proot-distro login ubuntu --shared-tmp $PROOT_ARGS -- bash -c "
     export DISPLAY=:${DISPLAY_NUM}
     export PULSE_SERVER=127.0.0.1
@@ -476,24 +470,30 @@ proot-distro login ubuntu --shared-tmp $PROOT_ARGS -- bash -c "
         -name 'Ubuntu Desktop' \
         -localhost no 2>&1
 
-    echo ''
-    echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-    echo '  ✔ VNC server started!'
-    echo \"  Connect to: localhost:${VNC_PORT}\"
-    echo \"  Resolution: ${RESOLUTION}\"
-    echo ''
-    echo '  Sound: plays through Android speakers (PulseAudio TCP)'
-    echo '  USB:   OTG devices accessible if Termux has USB permission'
-    echo ''
-    echo '  Open RealVNC Viewer → New Connection → localhost:${VNC_PORT}'
-    echo ''
-    echo '  Press Ctrl+C to stop.'
-    echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
-    echo ''
-
-    # Keep session alive
+    # Keep proot alive so VNC server stays running
     sleep infinity
-"
+" &
+PROOT_PID=$!
+echo "$PROOT_PID" > "$HOME/.proot-vnc.pid"
+disown $PROOT_PID
+
+# Wait for VNC to come up
+sleep 4
+
+echo ''
+echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+echo '  ✔ VNC server started in the background!'
+echo "  Connect to: localhost:${VNC_PORT}"
+echo "  Resolution: ${RESOLUTION}"
+echo ''
+echo '  Sound: plays through Android speakers (PulseAudio TCP)'
+echo '  USB:   OTG devices accessible if Termux has USB permission'
+echo ''
+echo "  Open RealVNC Viewer → New Connection → localhost:${VNC_PORT}"
+echo ''
+echo '  To stop:  bash ~/stop-ubuntu.sh'
+echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+echo ''
 LAUNCHER
 chmod +x "$HOME/start-ubuntu-vnc.sh"
 sed -i "s|proot-distro login ubuntu|proot-distro login $UBUNTU_ALIAS|g" "$HOME/start-ubuntu-vnc.sh"
@@ -536,7 +536,7 @@ sleep 2
 am start --user 0 -n com.termux.x11/com.termux.x11.MainActivity 2>/dev/null || \
     echo "  ⚠ Could not auto-launch Termux:X11 app. Open it manually."
 
-# Enter proot and start XFCE
+# Enter proot and start XFCE (backgrounded)
 # Build proot args: share /tmp and bind USB if available
 PROOT_ARGS=""
 if [[ -d /dev/bus/usb ]]; then
@@ -551,9 +551,25 @@ proot-distro login ubuntu --shared-tmp $PROOT_ARGS -- bash -c "
     export DBUS_SESSION_BUS_ADDRESS=unix:path=/tmp/dbus-session-bus
     dbus-daemon --session --address=\$DBUS_SESSION_BUS_ADDRESS --nofork --nopidfile 2>/dev/null &
 
-    echo '  Starting XFCE desktop...'
     startxfce4 2>/dev/null
-"
+    sleep infinity
+" &
+PROOT_PID=$!
+echo "$PROOT_PID" > "$HOME/.proot-x11.pid"
+disown $PROOT_PID
+
+sleep 3
+
+echo ''
+echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+echo '  ✔ Termux:X11 desktop started in the background!'
+echo ''
+echo '  Switch to the Termux:X11 app on Android.'
+echo '  Sound: plays through Android speakers (PulseAudio TCP)'
+echo ''
+echo '  To stop:  bash ~/stop-ubuntu.sh'
+echo '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━'
+echo ''
 LAUNCHER
 chmod +x "$HOME/start-ubuntu-x11.sh"
 sed -i "s|proot-distro login ubuntu|proot-distro login $UBUNTU_ALIAS|g" "$HOME/start-ubuntu-x11.sh"
@@ -598,6 +614,17 @@ echo "  ✔ VNC server stopped."
 
 # Stop Termux:X11
 pkill -f "termux.x11" 2>/dev/null && echo "  ✔ Termux:X11 stopped." || true
+
+# Kill backgrounded proot sessions
+for _pidfile in "$HOME/.proot-vnc.pid" "$HOME/.proot-x11.pid"; do
+    if [[ -f "$_pidfile" ]]; then
+        _pid="$(cat "$_pidfile")"
+        kill "$_pid" 2>/dev/null || true
+        rm -f "$_pidfile"
+    fi
+done
+pkill -f "proot-distro.*login.*ubuntu" 2>/dev/null || true
+echo "  ✔ Proot sessions stopped."
 
 # Stop PulseAudio
 pulseaudio --kill 2>/dev/null && echo "  ✔ PulseAudio stopped." || true

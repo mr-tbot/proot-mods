@@ -13,7 +13,7 @@
 set -euo pipefail
 
 # ── Config ────────────────────────────────────────────────────────────
-DISTRO="${PROOT_DISTRO:-ubuntu}"
+DISTRO="${PROOT_DISTRO:-ubuntu-oldlts}"
 ROOTFS="$PREFIX/var/lib/proot-distro/installed-rootfs/${DISTRO}"
 BACKUP_DIR="${PROOT_BACKUP_DIR:-$HOME/storage/shared/proot-backups}"
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -545,7 +545,7 @@ usage() {
     info <file>         Show details about a backup archive
 
   Options:
-    PROOT_DISTRO=name   Backup a different distro (default: ubuntu)
+    PROOT_DISTRO=name   Backup a different distro (default: ubuntu-oldlts)
     PROOT_BACKUP_DIR=p  Custom backup directory
 
   Examples:

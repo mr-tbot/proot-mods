@@ -431,6 +431,35 @@ msg "Creating desktop shortcut..."
 DESKTOP_DIR="$HOME/Desktop"
 mkdir -p "$DESKTOP_DIR"
 
+# Create a helper script for the desktop shortcut
+# (.desktop Exec= values must be a single line — can't use backslash continuations)
+cat > "$SYNC_SCRIPTS_DIR/gdrive-menu" <<'GDRIVE_MENU'
+#!/usr/bin/env bash
+echo "═══ Google Drive ═══"
+echo ""
+echo "1) Open folder in Thunar"
+echo "2) Pull from Drive (download)"
+echo "3) Push to Drive (upload)"
+echo "4) Bidirectional sync"
+echo "5) Show Drive status"
+echo "6) Open rclone config"
+echo ""
+read -p "Choice [1]: " c
+case "${c:-1}" in
+  1) thunar ~/GoogleDrive ;;
+  2) gdrive-pull ;;
+  3) gdrive-push ;;
+  4) gdrive-bisync ;;
+  5) gdrive-status ;;
+  6) rclone config ;;
+  *) thunar ~/GoogleDrive ;;
+esac
+echo ""
+read -p "Press Enter to close..."
+GDRIVE_MENU
+chmod +x "$SYNC_SCRIPTS_DIR/gdrive-menu"
+ok "Created gdrive-menu helper script"
+
 cat > "$DESKTOP_DIR/google-drive.desktop" <<'DESKTOP'
 [Desktop Entry]
 Version=1.0
@@ -439,27 +468,7 @@ Name=Google Drive
 Comment=Open Google Drive folder and show sync options
 Icon=folder-remote
 Terminal=true
-Exec=bash -c '\
-echo "═══ Google Drive ═══"; \
-echo ""; \
-echo "1) Open folder in Thunar"; \
-echo "2) Pull from Drive (download)"; \
-echo "3) Push to Drive (upload)"; \
-echo "4) Bidirectional sync"; \
-echo "5) Show Drive status"; \
-echo "6) Open rclone config"; \
-echo ""; \
-read -p "Choice [1]: " c; \
-case "${c:-1}" in \
-  1) thunar ~/GoogleDrive ;; \
-  2) gdrive-pull ;; \
-  3) gdrive-push ;; \
-  4) gdrive-bisync ;; \
-  5) gdrive-status ;; \
-  6) rclone config ;; \
-  *) thunar ~/GoogleDrive ;; \
-esac; \
-echo ""; read -p "Press Enter to close..."'
+Exec=gdrive-menu
 Categories=Network;FileTransfer;
 StartupNotify=false
 DESKTOP
