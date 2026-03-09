@@ -280,11 +280,15 @@ multiprocess model that works reliably, including Google login.
 
 **Chromium launch chain** (4-layer wrapper):
 ```
-/usr/bin/chromium            ← proot wrapper (8 flags) → exec's chromium.real
+/usr/bin/chromium            ← proot wrapper (7 flags) → exec's chromium.real
 /usr/bin/chromium.real       ← stock Debian launcher (sources /etc/chromium.d/*)
-/etc/chromium.d/proot-flags  ← proot-specific flags (sourced as env vars)
+/etc/chromium.d/proot-flags  ← comprehensive proot flags inc. --disable-features (sourced as env vars)
 /usr/lib/chromium/chromium   ← actual ELF binary
 ```
+**Important**: `--disable-features` is ONLY in `/etc/chromium.d/proot-flags`, NOT in the wrapper.
+Chromium uses only the LAST `--disable-features` on the command line, so putting it in the
+wrapper would override the comprehensive proot-flags version.
+
 Plus `/usr/local/bin/chromium-default` — debug/XFCE helper wrapper with logging to `/tmp/chromium-default.log`.
 
 **If Firefox selected** — installed from Mozilla official APT:

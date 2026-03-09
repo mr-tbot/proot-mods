@@ -353,8 +353,11 @@ exec /usr/bin/chromium.real \
   --no-zygote \
   --password-store=basic \
   --use-mock-keychain \
-  --disable-features=WebAuthentication,WebAuthn,SecurePaymentConfirmation \
   "$@"
+# NOTE: --disable-features is NOT listed here — it is handled by
+# /etc/chromium.d/proot-flags (sourced by chromium.real).  Adding it
+# here would override proot-flags because Chromium uses only the LAST
+# --disable-features on the command line.
 CHROMWRAP
 chmod +x /usr/bin/chromium
 ok "Proot wrapper created at /usr/bin/chromium → calls chromium.real"
@@ -402,8 +405,15 @@ mkdir -p /dev/shm && chmod 1777 /dev/shm
 mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 ok "Runtime directories ensured (/dev/shm, /tmp/runtime-root)"
 
-apt-mark hold chromium chromium-common 2>/dev/null || true
-ok "Chromium packages held (no accidental upgrades)"
+# CRITICAL: Hold ALL Buster packages to prevent apt-get install -f from
+# removing the force-installed compat libs (which it treats as "broken").
+apt-mark hold \
+    chromium chromium-common \
+    libevent-2.1-6 libicu63 libjsoncpp1 libre2-5 libvpx5 \
+    libavcodec58 libavformat58 libavutil56 libswresample3 \
+    libaom0 libcodec2-0.8.1 libx264-155 libx265-165 \
+    libssh-gcrypt-4 2>/dev/null || true
+ok "Chromium + 14 Buster compat packages held (protected from apt-get install -f)"
 
 # .desktop file
 cat > /usr/share/applications/chromium.desktop <<'CHROMDESK'
