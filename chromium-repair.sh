@@ -102,6 +102,8 @@ ok "Snap browser stubs removed"
 msg "Removing existing Chromium packages..."
 apt-mark unhold chromium chromium-common 2>/dev/null || true
 dpkg --purge --force-depends chromium chromium-common 2>/dev/null || true
+# Clean up old wrapper artifacts from previous runs
+rm -f /usr/bin/chromium.real 2>/dev/null || true
 ok "Old Chromium removed"
 
 # Clean up old repo configs
@@ -122,6 +124,14 @@ ok "All old configs cleaned"
 # ══════════════════════════════════════════════════════════════════════
 printf "\n${BOLD}Phase 2: Blocking snap-stub chromium packages permanently...${NC}\n\n"
 
+# Block snapd from being installed/upgraded (useless in proot)
+cat > /etc/apt/preferences.d/no-snapd.pref <<'NOSNAPD'
+Package: snapd
+Pin: release *
+Pin-Priority: -10
+NOSNAPD
+ok "snapd blocked permanently"
+
 cat > /etc/apt/preferences.d/no-snap-chromium.pref <<'NOSNAPCHROM'
 Package: chromium-browser chromium-browser-l10n chromium-codecs-ffmpeg chromium-codecs-ffmpeg-extra
 Pin: release o=Ubuntu
@@ -132,7 +142,16 @@ Pin: release *
 Pin-Priority: -10
 NOSNAPCHROM
 
-ok "Snap-stub chromium packages blocked permanently"
+ok "snapd + snap browser stubs blocked permanently"
+
+# Block Ubuntu's firefox snap-stub package
+# (we install the real Firefox from Mozilla's official APT repo instead)
+cat > /etc/apt/preferences.d/no-snap-firefox.pref <<'NOSNAPFF'
+Package: firefox
+Pin: release o=Ubuntu
+Pin-Priority: -1
+NOSNAPFF
+ok "Ubuntu firefox snap stub blocked permanently"
 
 # Fix broken dpkg state
 dpkg --configure -a 2>/dev/null || true
@@ -319,50 +338,36 @@ ok "Proot flags written to /etc/chromium.d/proot-flags"
 
 
 # ══════════════════════════════════════════════════════════════════════
-#  PHASE 10: Create proot wrapper (proven ubchromiumfix.sh launch chain)
+#  PHASE 10: Ensure stock Chromium launcher is intact
 # ══════════════════════════════════════════════════════════════════════
-printf "\n${BOLD}Phase 10: Creating proot wrapper...${NC}\n\n"
+printf "\n${BOLD}Phase 10: Ensuring stock launcher is intact...${NC}\n\n"
 
 # The stock Debian launcher (/usr/bin/chromium) sources /etc/chromium.d/*
-# and then exec's the ELF binary.  We rename it to chromium.real and
-# create a wrapper that injects critical proot flags BEFORE it runs.
+# and then exec's the ELF binary.  All proot flags are injected via
+# /etc/chromium.d/proot-flags — no wrapper is needed.
 
-# Preserve the stock Debian launcher as chromium.real
-if [[ -f /usr/bin/chromium ]] && [[ ! -f /usr/bin/chromium.real ]]; then
-    mv /usr/bin/chromium /usr/bin/chromium.real
-    chmod +x /usr/bin/chromium.real
-    ok "Stock launcher preserved as /usr/bin/chromium.real"
-elif [[ -f /usr/bin/chromium ]] && [[ -f /usr/bin/chromium.real ]]; then
-    if ! head -3 /usr/bin/chromium 2>/dev/null | grep -q "proot chromium wrapper"; then
-        mv /usr/bin/chromium /usr/bin/chromium.real
-        chmod +x /usr/bin/chromium.real
-        ok "Stock launcher re-preserved as /usr/bin/chromium.real"
-    fi
+# Undo previous wrapper installs: if chromium.real exists, restore
+# the stock launcher (a prior run may have renamed it).
+if [[ -f /usr/bin/chromium.real ]]; then
+    mv -f /usr/bin/chromium.real /usr/bin/chromium
+    chmod +x /usr/bin/chromium
+    ok "Restored stock launcher from chromium.real (removed old wrapper)"
 fi
 
-# Create the proot wrapper at /usr/bin/chromium
-cat > /usr/bin/chromium <<'CHROMWRAP'
-#!/bin/sh
-# proot chromium wrapper: force flags so XFCE/exo-open can launch as root
-# reliably and prevent Gmail/Google login crashes (WebAuthn/FIDO + keychain).
-exec /usr/bin/chromium.real \
-  --no-sandbox \
-  --disable-dev-shm-usage \
-  --disable-gpu \
-  --disable-software-rasterizer \
-  --no-zygote \
-  --password-store=basic \
-  --use-mock-keychain \
-  "$@"
-# NOTE: --disable-features is NOT listed here — it is handled by
-# /etc/chromium.d/proot-flags (sourced by chromium.real).  Adding it
-# here would override proot-flags because Chromium uses only the LAST
-# --disable-features on the command line.
-CHROMWRAP
-chmod +x /usr/bin/chromium
-ok "Proot wrapper created at /usr/bin/chromium → calls chromium.real"
+# Verify /usr/bin/chromium is the stock Debian launcher
+if [[ -f /usr/bin/chromium ]]; then
+    if head -20 /usr/bin/chromium 2>/dev/null | grep -q "chromium.d\|CHROMIUM_FLAGS"; then
+        ok "Stock Debian launcher verified at /usr/bin/chromium"
+    else
+        warn "/usr/bin/chromium may not be the stock Debian launcher — check manually"
+    fi
+else
+    warn "/usr/bin/chromium not found — Chromium may not have installed correctly"
+fi
 
 # Create debug/XFCE helper wrapper at /usr/local/bin/chromium-default
+# This logs launch info for troubleshooting, then exec's the stock launcher.
+# All flags come from /etc/chromium.d/proot-flags (sourced by the launcher).
 mkdir -p /usr/local/bin
 cat > /usr/local/bin/chromium-default <<'CHROMDEFAULT'
 #!/bin/sh
@@ -384,13 +389,7 @@ export XDG_RUNTIME_DIR="${XDG_RUNTIME_DIR:-/tmp/runtime-root}"
 mkdir -p "$XDG_RUNTIME_DIR"
 chmod 700 "$XDG_RUNTIME_DIR" 2>/dev/null || true
 
-exec /usr/bin/chromium \
-  --no-sandbox \
-  --disable-dev-shm-usage \
-  --disable-gpu \
-  --disable-software-rasterizer \
-  --no-zygote \
-  "$@"
+exec /usr/bin/chromium "$@"
 CHROMDEFAULT
 chmod +x /usr/local/bin/chromium-default
 ok "Debug wrapper created at /usr/local/bin/chromium-default"
@@ -415,14 +414,14 @@ apt-mark hold \
     libssh-gcrypt-4 2>/dev/null || true
 ok "Chromium + 14 Buster compat packages held (protected from apt-get install -f)"
 
-# .desktop file
+# .desktop file — stock launcher sources proot-flags automatically
 cat > /usr/share/applications/chromium.desktop <<'CHROMDESK'
 [Desktop Entry]
 Type=Application
 Name=Chromium Web Browser
 Comment=Access the Internet
 GenericName=Web Browser
-Exec=/usr/bin/chromium --no-sandbox --disable-dev-shm-usage %U
+Exec=chromium %U
 Icon=chromium
 Terminal=false
 Categories=Network;WebBrowser;
@@ -433,11 +432,11 @@ Actions=new-window;new-private-window;
 
 [Desktop Action new-window]
 Name=New Window
-Exec=/usr/bin/chromium --no-sandbox --disable-dev-shm-usage --new-window
+Exec=chromium --new-window
 
 [Desktop Action new-private-window]
 Name=New Private Window
-Exec=/usr/bin/chromium --no-sandbox --disable-dev-shm-usage --incognito
+Exec=chromium --incognito
 CHROMDESK
 ok "Chromium .desktop file written"
 
@@ -470,9 +469,20 @@ ok "Old Firefox removed"
 
 # Add Mozilla GPG key
 msg "Adding Mozilla APT signing key..."
-wget -qO- https://packages.mozilla.org/apt/repo-signing-key.gpg \
-    | gpg --dearmor > /usr/share/keyrings/packages.mozilla.org.gpg 2>/dev/null
-ok "Mozilla GPG key added"
+_moz_key_ok=0
+wget -q -O /tmp/mozilla-signing-key.gpg \
+    https://packages.mozilla.org/apt/repo-signing-key.gpg 2>&1 && \
+    [[ -s /tmp/mozilla-signing-key.gpg ]] && \
+    gpg --dearmor < /tmp/mozilla-signing-key.gpg \
+        > /usr/share/keyrings/packages.mozilla.org.gpg 2>&1 && \
+    [[ -s /usr/share/keyrings/packages.mozilla.org.gpg ]] && \
+    _moz_key_ok=1
+rm -f /tmp/mozilla-signing-key.gpg 2>/dev/null || true
+if [[ "$_moz_key_ok" -eq 1 ]]; then
+    ok "Mozilla GPG key added"
+else
+    err "Failed to download/dearmor Mozilla GPG key — Firefox install may fail."
+fi
 
 # Add Mozilla APT repository
 echo "deb [signed-by=/usr/share/keyrings/packages.mozilla.org.gpg] https://packages.mozilla.org/apt mozilla main" \
@@ -495,7 +505,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
     -o Dpkg::Options::="--force-confold" \
     firefox 2>&1
 
-if ! command -v firefox >/dev/null 2>&1; then
+if ! dpkg -s firefox 2>/dev/null | grep -q "Status: install ok installed"; then
     die "Firefox installation failed!"
 fi
 ok "Firefox installed: $(firefox --version 2>/dev/null || echo 'ok')"
@@ -573,6 +583,8 @@ _verify() {
 }
 
 _verify "snap stubs blocked"           "test -f /etc/apt/preferences.d/no-snap-chromium.pref"
+_verify "Firefox snap blocked"         "test -f /etc/apt/preferences.d/no-snap-firefox.pref"
+_verify "snapd blocked"               "test -f /etc/apt/preferences.d/no-snapd.pref"
 _verify "/dev/shm exists"             "test -d /dev/shm"
 
 if [[ "$INSTALL_CHROMIUM" -eq 1 ]]; then
@@ -581,8 +593,8 @@ _verify "chromium NOT snap stub"       "! head -20 /usr/bin/chromium 2>/dev/null
 _verify "chromium no missing libs"     "test -z \"\$(ldd /usr/lib/chromium/chromium 2>&1 | grep 'not found')\""
 _verify "proot-flags config exists"    "test -f /etc/chromium.d/proot-flags"
 _verify "proot-flags has --no-sandbox" "grep -q 'no-sandbox' /etc/chromium.d/proot-flags"
-_verify "chromium wrapper active"      "head -3 /usr/bin/chromium 2>/dev/null | grep -q 'proot chromium wrapper'"
-_verify "chromium.real exists"         "test -f /usr/bin/chromium.real"
+_verify "stock launcher intact"        "head -20 /usr/bin/chromium 2>/dev/null | grep -q 'chromium.d\|CHROMIUM_FLAGS'"
+_verify "no old wrapper artifact"      "test ! -f /usr/bin/chromium.real"
 _verify "chromium-default exists"      "test -f /usr/local/bin/chromium-default"
 _verify "chromium .desktop exists"     "test -f /usr/share/applications/chromium.desktop"
 _verify "chromium packages held"       "apt-mark showhold 2>/dev/null | grep -q chromium"

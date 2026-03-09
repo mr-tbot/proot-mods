@@ -11,7 +11,7 @@ Uses `proot-distro` to install Ubuntu, then applies sandbox/GPU/keyring mods tha
 | **OS** | Ubuntu 22.04 LTS or latest (user choice) via `proot-distro` |
 | **Desktop** | XFCE4 — dark theme, Humanity icons, bottom dock panel, solid black wallpaper |
 | **Display** | TigerVNC (preferred) or Termux:X11 — interactive resolution presets |
-| **Browsers** | Chromium v89 and/or Firefox (user choice) + Google Chrome — all with proot wrappers/flags |
+| **Browsers** | Chromium v89 and/or Firefox (user choice) + Google Chrome — all with proot flags |
 | **Code Editor** | Visual Studio Code with `--no-sandbox`, `password-store=basic` |
 | **Office** | LibreOffice (Writer, Calc, Impress, Draw, Base) |
 | **Graphics** | GIMP, Blender (software rendering) |
@@ -125,13 +125,13 @@ proot-dev-mods/
 
 | Script | Purpose |
 |---|---|
-| `/root/chromium-repair.sh` | Reinstall Chromium v89 from Debian Buster with proot wrapper chain. Run after browser issues or snap contamination. |
+| `/root/chromium-repair.sh` | Reinstall Chromium v89 from Debian Buster with proot flags. Run after browser issues or snap contamination. |
 | `/root/vscode-repair.sh` | Restore VSCode proot wrapper, `argv.json`, `settings.json`, and `.desktop` patches. Run after any VSCode update. |
 
 ### setup-proot.sh
 Runs inside Ubuntu proot. Installs and configures:
 - XFCE4 desktop + TigerVNC with bottom dock panel
-- Browser choice: Chromium v89 (Debian Buster .deb + 14 compat libraries + 4-layer proot wrapper chain) and/or Firefox (Mozilla APT + proot wrapper)
+- Browser choice: Chromium v89 (Debian Buster .deb + 14 compat libraries + proot flags via `/etc/chromium.d/`) and/or Firefox (Mozilla APT + proot wrapper)
 - Google Chrome with proot wrapper
 - VSCode with proot wrapper (`--no-sandbox`, `--password-store=basic`)
 - Blender, GIMP, LibreOffice, GParted, Kdenlive, Shotcut, OBS Studio, Thunderbird, Spotify

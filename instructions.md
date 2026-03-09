@@ -256,7 +256,7 @@ The script is fully idempotent (safe to re-run). Uses `_is_installed()` / `_all_
 **Interactive prompt** — choose Chromium v89, Firefox, or Both:
 
 1. Removes snap browser stubs (Firefox, Chromium) — snapd itself is kept
-2. Blocks snap-stub chromium permanently via APT preferences
+2. Blocks snap-stub chromium + firefox permanently via APT preferences (`no-snap-chromium.pref`, `no-snap-firefox.pref`)
 
 **If Chromium selected** — installed from Debian Buster archive (NOT snap):
 3. Downloads Chromium v89 .debs + 14 Buster compat libraries directly from `archive.debian.org`
@@ -278,23 +278,21 @@ multiprocess model that works reliably, including Google login.
 - `--disable-features=VizDisplayCompositor,WebAuthentication,WebAuthn,...` (single flag — Chromium uses only the LAST `--disable-features`)
 - `--password-store=basic`, `--use-mock-keychain`, `--no-first-run`
 
-**Chromium launch chain** (4-layer wrapper):
+**Chromium launch chain** (3-layer, no wrapper — stock launcher handles everything):
 ```
-/usr/bin/chromium            ← proot wrapper (7 flags) → exec's chromium.real
-/usr/bin/chromium.real       ← stock Debian launcher (sources /etc/chromium.d/*)
+/usr/bin/chromium            ← stock Debian launcher (sources /etc/chromium.d/*)
 /etc/chromium.d/proot-flags  ← comprehensive proot flags inc. --disable-features (sourced as env vars)
 /usr/lib/chromium/chromium   ← actual ELF binary
 ```
-**Important**: `--disable-features` is ONLY in `/etc/chromium.d/proot-flags`, NOT in the wrapper.
-Chromium uses only the LAST `--disable-features` on the command line, so putting it in the
-wrapper would override the comprehensive proot-flags version.
+**Important**: `--disable-features` is ONLY in `/etc/chromium.d/proot-flags`.
+Chromium uses only the LAST `--disable-features` on the command line.
 
 Plus `/usr/local/bin/chromium-default` — debug/XFCE helper wrapper with logging to `/tmp/chromium-default.log`.
 
 **If Firefox selected** — installed from Mozilla official APT:
-3. Adds Mozilla GPG key + APT repository (`packages.mozilla.org/apt`)
+3. Adds Mozilla GPG key (robust download with temp file + size verification) + APT repository (`packages.mozilla.org/apt`)
 4. Pins Mozilla Firefox with priority 1001 (overrides Ubuntu snap stub)
-5. Installs `firefox` package
+5. Installs `firefox` package (re-run safe — skips if already installed via dpkg)
 6. Creates proot wrapper with `MOZ_FAKE_NO_SANDBOX=1` and sandbox-disable env vars
 7. The wrapper calls `/usr/bin/firefox.real` (the actual Mozilla binary)
 
