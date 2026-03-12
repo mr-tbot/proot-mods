@@ -124,7 +124,7 @@ Follow the prompts — you'll choose browsers, hostname, and whether to enable S
 
 ```bash
 exit
-cd .. (back to Termux home)
+cd ..                               # (back to Termux home)
 bash ~/start-ubuntu-vnc.sh          # Starts VNC in the background
 ```
 
